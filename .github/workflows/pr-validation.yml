@@ -26,46 +26,34 @@ permissions:
   contents: read
 
 env:
-  # Confirm this with the SailPoint team.
-  JAVA_VERSION: "11"
-
+  JAVA_VERSION: "17"
   CONFIG_DIR: "config"
-
-  # Your build.xml contains this target.
-  ANT_BUILD_TARGET: "war"
-
-  # Your build.xml creates the WAR here.
-  WAR_PATH: "build/deploy/identityiq.war"
-
-  # Your existing SSB properties contain sandbox target files.
   SPTARGET: "sandbox"
+  WAR_PATH: "build/deploy/identityiq.war"
 
 jobs:
 
-  # ==========================================================
+  # =========================================================
   # JOB 1 - VALIDATION
-  # ==========================================================
+  # =========================================================
   validate:
     name: Validate SailPoint Changes
     runs-on: ubuntu-latest
 
     steps:
 
-      # ------------------------------------------------------
-      # Checkout complete repository
-      # ------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------
-      # Validate required SSB structure
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Validate SSB repository structure
+      # -------------------------------------------------------
       - name: Validate SSB Structure
         shell: bash
         run: |
-          echo "Validating SailPoint SSB repository structure..."
+          echo "Validating SailPoint SSB structure..."
 
           status=0
 
@@ -74,7 +62,7 @@ jobs:
             "build.properties"
           )
 
-          required_directories=(
+          required_dirs=(
             "config"
             "scripts"
             "src"
@@ -90,33 +78,43 @@ jobs:
             fi
           done
 
-          for directory in "${required_directories[@]}"; do
-            if [ ! -d "$directory" ]; then
-              echo "::error::$directory directory is missing"
+          for dir in "${required_dirs[@]}"; do
+            if [ ! -d "$dir" ]; then
+              echo "::error::$dir directory is missing"
               status=1
             else
-              echo "PASS: $directory"
+              echo "PASS: $dir"
             fi
           done
 
           exit "$status"
 
-      # ------------------------------------------------------
-      # Validate XML files
-      # ------------------------------------------------------
-      - name: Install XML Validation Tools
+      # -------------------------------------------------------
+      # Install XML lint module
+      # -------------------------------------------------------
+      - name: Install XML Lint Module
         shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libxml2-utils
 
-      - name: Validate IIQ XML
+          xmllint --version
+
+      # -------------------------------------------------------
+      # Validate IIQ XML
+      # -------------------------------------------------------
+      - name: Lint IIQ XML Files
         shell: bash
         run: |
-          echo "Validating XML files under $CONFIG_DIR..."
+          echo "Validating XML files..."
 
           status=0
           count=0
+
+          if [ ! -d "$CONFIG_DIR" ]; then
+            echo "::error::Configuration directory $CONFIG_DIR does not exist"
+            exit 1
+          fi
 
           while IFS= read -r -d '' file; do
 
@@ -127,7 +125,6 @@ jobs:
             if ! xmllint --noout "$file" 2>/tmp/xml_error; then
 
               echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
-
               status=1
 
             else
@@ -142,35 +139,32 @@ jobs:
 
           exit "$status"
 
-      # ------------------------------------------------------
+      # -------------------------------------------------------
       # Secret scanning
-      # ------------------------------------------------------
+      # -------------------------------------------------------
       - name: Scan Repository for Secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
-  # ==========================================================
-  # JOB 2 - BUILD AND SECURITY VALIDATION
-  # ==========================================================
-  build:
+  # =========================================================
+  # JOB 2 - BUILD ENVIRONMENT VALIDATION
+  # =========================================================
+  build-validation:
     name: Build and Security Validation
     needs: validate
     runs-on: ubuntu-latest
 
     steps:
 
-      # ------------------------------------------------------
-      # Checkout repository
-      # ------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------
-      # Java setup
-      # ------------------------------------------------------
-      - name: Setup Java
+      # -------------------------------------------------------
+      # OpenJDK 17
+      # -------------------------------------------------------
+      - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -179,79 +173,93 @@ jobs:
       - name: Verify Java
         shell: bash
         run: |
-          echo "Java version:"
+          echo "Java configuration:"
           java -version
 
-      # ------------------------------------------------------
-      # Ant setup
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Apache Ant
+      # -------------------------------------------------------
       - name: Install Apache Ant
         shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ant
 
-          echo "Ant version:"
+          echo "Ant configuration:"
           ant -version
 
-      # ------------------------------------------------------
-      # Display available Ant targets
-      # Useful for confirming SSB targets during POC
-      # ------------------------------------------------------
-      - name: Verify Ant Build Configuration
+      # -------------------------------------------------------
+      # Check build targets
+      # -------------------------------------------------------
+      - name: Verify SSB Ant Configuration
         shell: bash
         run: |
           echo "Available Ant targets:"
           ant -p
 
-      # ------------------------------------------------------
-      # Compile / base SSB build validation
-      # ------------------------------------------------------
-      - name: Compile and Validate SSB
-        shell: bash
-        run: |
-          echo "Building for target: $SPTARGET"
-
-          export SPTARGET="$SPTARGET"
-
-          ant main
-
-      # ------------------------------------------------------
-      # Unit tests
+      # -------------------------------------------------------
+      # Check for required IdentityIQ base binary
       #
-      # Runs only if an Ant 'test' target actually exists.
-      # ------------------------------------------------------
-      - name: Run Unit Tests
+      # Build remains blocked until the licensed IIQ GA
+      # distribution is made available.
+      # -------------------------------------------------------
+      - name: Check IdentityIQ Base Package
+        id: iiq-base
         shell: bash
         run: |
-          if ant -p | grep -Eq '^[[:space:]]*test([[:space:]]|$)'; then
+          echo "Checking base/ga for IdentityIQ GA package..."
 
-            echo "Unit test target found"
+          IIQ_PACKAGE=$(find base/ga \
+            -maxdepth 1 \
+            -type f \
+            ! -name ".keep" \
+            | head -n 1)
 
-            ant test
+          if [ -z "$IIQ_PACKAGE" ]; then
+
+            echo "IdentityIQ GA package is currently unavailable."
+            echo "SSB compilation, dependency scanning and WAR generation will be skipped."
+            echo "available=false" >> "$GITHUB_OUTPUT"
 
           else
 
-            echo "No Ant test target found."
-            echo "Unit tests skipped for this build."
+            echo "IdentityIQ base package found."
+            echo "Package: $IIQ_PACKAGE"
+            echo "available=true" >> "$GITHUB_OUTPUT"
 
           fi
 
-      # ------------------------------------------------------
-      # Existing SSB dependency/security scan
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Compile/build SSB
+      #
+      # No JUnit step - unit tests are not part of current POC.
+      # -------------------------------------------------------
+      - name: Compile and Validate SSB
+        if: steps.iiq-base.outputs.available == 'true'
+        shell: bash
+        run: |
+          export SPTARGET="$SPTARGET"
+
+          echo "Building for environment: $SPTARGET"
+
+          ant main
+
+      # -------------------------------------------------------
+      # Dependency/security scan
+      # -------------------------------------------------------
       - name: Run Dependency Security Check
+        if: steps.iiq-base.outputs.available == 'true'
         shell: bash
         run: |
           export SPTARGET="$SPTARGET"
 
           ant dependency-check
 
-      # ------------------------------------------------------
-      # Upload dependency/security reports
-      # ------------------------------------------------------
-      - name: Publish Security Reports
-        if: always()
+      # -------------------------------------------------------
+      # Publish security report
+      # -------------------------------------------------------
+      - name: Publish Dependency Check Reports
+        if: always() && steps.iiq-base.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dependency-check-reports
@@ -259,17 +267,14 @@ jobs:
           if-no-files-found: ignore
 
 
-  # ==========================================================
-  # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
-  #
-  # Enable this once WAR is confirmed as the official
-  # deployment artifact.
-  # ==========================================================
+  # =========================================================
+  # JOB 3 - BUILD AND PUBLISH ARTIFACT
+  # =========================================================
   build-artifact:
     name: Build and Publish IdentityIQ Artifact
     needs:
       - validate
-      - build
+      - build-validation
 
     runs-on: ubuntu-latest
 
@@ -278,7 +283,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -289,31 +294,58 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ant
+
           ant -version
 
-      # ------------------------------------------------------
-      # Generate IdentityIQ WAR
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Check IdentityIQ binary again because each GitHub job
+      # runs on a fresh runner
+      # -------------------------------------------------------
+      - name: Check IdentityIQ Base Package
+        id: iiq-base
+        shell: bash
+        run: |
+          IIQ_PACKAGE=$(find base/ga \
+            -maxdepth 1 \
+            -type f \
+            ! -name ".keep" \
+            | head -n 1)
+
+          if [ -z "$IIQ_PACKAGE" ]; then
+
+            echo "IdentityIQ GA package is unavailable."
+            echo "Artifact build will be skipped."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+
+          else
+
+            echo "IdentityIQ base package found."
+            echo "available=true" >> "$GITHUB_OUTPUT"
+
+          fi
+
+      # -------------------------------------------------------
+      # Build WAR
+      # -------------------------------------------------------
       - name: Build IdentityIQ WAR
+        if: steps.iiq-base.outputs.available == 'true'
         shell: bash
         run: |
           export SPTARGET="$SPTARGET"
 
-          echo "Running Ant target: $ANT_BUILD_TARGET"
+          ant war
 
-          ant "$ANT_BUILD_TARGET"
-
-      # ------------------------------------------------------
-      # Verify, version and checksum artifact
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Verify, version and checksum
+      # -------------------------------------------------------
       - name: Version Deployment Artifact
+        if: steps.iiq-base.outputs.available == 'true'
         id: artifact
         shell: bash
         run: |
           if [ ! -f "$WAR_PATH" ]; then
 
             echo "::error::WAR not found at $WAR_PATH"
-
             exit 1
 
           fi
@@ -326,32 +358,34 @@ jobs:
 
           cp "$WAR_PATH" "dist/${ARTIFACT_NAME}.war"
 
-          (
-            cd dist
-            sha256sum "${ARTIFACT_NAME}.war" \
-              > "${ARTIFACT_NAME}.war.sha256"
-          )
+          cd dist
+
+          sha256sum "${ARTIFACT_NAME}.war" \
+            > "${ARTIFACT_NAME}.war.sha256"
 
           echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
-          echo "Artifact created:"
-          echo "${ARTIFACT_NAME}.war"
+          echo "Created artifact: ${ARTIFACT_NAME}.war"
 
-          echo "### SailPoint CI Artifact" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${ARTIFACT_NAME}.war\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "SHA256:" >> "$GITHUB_STEP_SUMMARY"
-          cat "dist/${ARTIFACT_NAME}.war.sha256" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-      # ------------------------------------------------------
-      # Publish artifact
-      # ------------------------------------------------------
+      # -------------------------------------------------------
+      # Publish WAR
+      # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
+        if: steps.iiq-base.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact.outputs.artifact_name }}
           path: dist/*
           retention-days: 30
           if-no-files-found: error
+
+      # -------------------------------------------------------
+      # Status while GA binary is unavailable
+      # -------------------------------------------------------
+      - name: Report Pending Build Dependency
+        if: steps.iiq-base.outputs.available != 'true'
+        shell: bash
+        run: |
+          echo "CI validation completed."
+          echo "IdentityIQ build/artifact generation is pending."
+          echo "Reason: IdentityIQ 8.3 GA base package is not yet available in base/ga."
