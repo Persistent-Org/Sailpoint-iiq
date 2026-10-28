@@ -1,0 +1,76 @@
+name: SailPoint IIQ PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: XML Validation and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Configure OpenJDK 17
+      - name: Setup OpenJDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. Verify Java version
+      - name: Verify Java Version
+        run: java -version
+
+      # 4. Install required build and XML lint tools
+      - name: Install Ant and XML Lint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ant libxml2-utils
+
+      # 5. Verify Ant
+      - name: Verify Ant Version
+        run: ant -version
+
+      # 6. Lint/validate XML files
+      - name: Lint XML Files
+        shell: bash
+        run: |
+          set -e
+
+          echo "Validating XML files..."
+
+          mapfile -d '' xml_files < <(find . -type f -name "*.xml" \
+            -not -path "./.git/*" \
+            -print0)
+
+          if [ ${#xml_files[@]} -eq 0 ]; then
+            echo "No XML files found."
+            exit 0
+          fi
+
+          failed=0
+
+          for file in "${xml_files[@]}"; do
+            echo "Validating: $file"
+
+            if ! xmllint --noout "$file"; then
+              echo "Invalid XML: $file"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "XML validation failed."
+            exit 1
+          fi
+
+          echo "All XML files are valid."
+
+      # 7. Build SailPoint IIQ project
+      - name: Ant Build
+        run: ant
