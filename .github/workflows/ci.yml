@@ -1,0 +1,138 @@
+name: CI - Build & Validate (SailPoint IIQ)
+
+on:
+  push:
+    branches:
+      - develop
+      - "feature/**"
+      - "bugfix/**"
+
+  pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "17"
+  CONFIG_DIR: "config"
+  SPTARGET: "sandbox"
+  IIQ_VERSION: "8.5"
+  IIQ_PACKAGE_PATH: "base/ga/identityiq-8.5.zip"
+  WAR_PATH: "build/deploy/identityiq.war"
+
+jobs:
+
+  # =========================================================
+  # JOB 1 - VALIDATE
+  # =========================================================
+  validate:
+    name: Validate SailPoint Changes
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate SSB Structure
+        shell: bash
+        run: |
+          echo "Validating SailPoint SSB repository structure..."
+
+          status=0
+
+          required_files=(
+            "build.xml"
+            "build.properties"
+            "scripts/build.filelayout.xml"
+            "scripts/build.java.xml"
+          )
+
+          required_dirs=(
+            "base"
+            "config"
+            "scripts"
+            "src"
+            "lib"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::$file is missing"
+              status=1
+            else
+              echo "PASS: $file"
+            fi
+          done
+
+          for dir in "${required_dirs[@]}"; do
+            if [ ! -d "$dir" ]; then
+              echo "::error::$dir directory is missing"
+              status=1
+            else
+              echo "PASS: $dir"
+            fi
+          done
+
+          exit "$status"
+
+      - name: Install XML Lint
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxml2-utils
+          xmllint --version
+
+      - name: Validate IIQ XML Files
+        shell: bash
+        run: |
+          echo "Validating SailPoint XML files..."
+
+          status=0
+          count=0
+
+          while IFS= read -r -d '' file; do
+            count=$((count + 1))
+            echo "Checking: $file"
+
+            if ! xmllint --noout "$file" 2>/tmp/xml_error; then
+              echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
+              status=1
+            else
+              echo "PASS: $file"
+            fi
+
+          done < <(
+            find "$CONFIG_DIR" \
+              -type f \
+              -name "*.xml" \
+              -print0
+          )
+
+          echo "Checked $count XML files"
+          exit "$status"
+
+      - name: Scan Repository for Secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+  # =========================================================
+  # JOB 2 - BUILD AND SECURITY VALIDATION
+  # ===========
