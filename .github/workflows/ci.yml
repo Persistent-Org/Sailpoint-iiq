@@ -29,48 +29,38 @@ env:
   JAVA_VERSION: "17"
   CONFIG_DIR: "config"
   SPTARGET: "sandbox"
-
-  # IMPORTANT:
-  # Change these values if the project is actually using IIQ 8.3.
   IIQ_VERSION: "8.5"
   IIQ_PACKAGE_PATH: "base/ga/identityiq-8.5.zip"
-
   WAR_PATH: "build/deploy/identityiq.war"
-
 
 jobs:
 
-  # ==========================================================
-  # JOB 1 - VALIDATE
-  # ==========================================================
+  # =========================================================
+  # JOB 1 - VALIDATION
+  # =========================================================
   validate:
     name: Validate SailPoint Changes
     runs-on: ubuntu-latest
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout source code
-      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-
-      # -------------------------------------------------------
-      # Validate SSB repository structure
-      # -------------------------------------------------------
       - name: Validate SSB Structure
         shell: bash
         run: |
-          echo "Validating SailPoint SSB repository structure..."
+          echo "Validating SailPoint SSB structure..."
 
           status=0
 
           required_files=(
             "build.xml"
             "build.properties"
+            "scripts/build.filelayout.xml"
+            "scripts/build.java.xml"
           )
 
           required_dirs=(
@@ -82,73 +72,58 @@ jobs:
           )
 
           for file in "${required_files[@]}"; do
-
             if [ ! -f "$file" ]; then
               echo "::error::$file is missing"
               status=1
             else
               echo "PASS: $file"
             fi
-
           done
 
           for dir in "${required_dirs[@]}"; do
-
             if [ ! -d "$dir" ]; then
               echo "::error::$dir directory is missing"
               status=1
             else
               echo "PASS: $dir"
             fi
-
           done
 
           exit "$status"
 
-
       # -------------------------------------------------------
-      # Install XML lint module
+      # XML lint
       # -------------------------------------------------------
       - name: Install XML Lint
         shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libxml2-utils
-
           xmllint --version
 
-
-      # -------------------------------------------------------
-      # Validate SailPoint IIQ XML
-      # -------------------------------------------------------
       - name: Validate IIQ XML Files
         shell: bash
         run: |
-          echo "Validating SailPoint XML under $CONFIG_DIR..."
+          echo "Validating SailPoint XML files..."
 
           status=0
           count=0
 
           if [ ! -d "$CONFIG_DIR" ]; then
-            echo "::error::$CONFIG_DIR directory does not exist"
+            echo "::error::$CONFIG_DIR directory not found"
             exit 1
           fi
 
           while IFS= read -r -d '' file; do
-
             count=$((count + 1))
 
             echo "Checking: $file"
 
             if ! xmllint --noout "$file" 2>/tmp/xml_error; then
-
               echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
               status=1
-
             else
-
               echo "PASS: $file"
-
             fi
 
           done < <(
@@ -162,7 +137,6 @@ jobs:
 
           exit "$status"
 
-
       # -------------------------------------------------------
       # Secret scanning
       # -------------------------------------------------------
@@ -172,23 +146,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
-  # ==========================================================
-  # JOB 2 - BUILD & SECURITY VALIDATION
-  # ==========================================================
+  # =========================================================
+  # JOB 2 - BUILD VALIDATION
+  # =========================================================
   build:
-    name: Build and Security Validation
+    name: Build Validation
     needs: validate
-
     runs-on: ubuntu-latest
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout source
-      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
-
 
       # -------------------------------------------------------
       # OpenJDK 17
@@ -199,13 +168,10 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-
       - name: Verify Java
         shell: bash
         run: |
-          echo "Java version:"
           java -version
-
 
       # -------------------------------------------------------
       # Apache Ant
@@ -214,45 +180,31 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ant
+          sudo apt-get install -y -qq ant unzip
 
-          echo "Ant version:"
           ant -version
 
-
-      # -------------------------------------------------------
-      # Verify Ant/SSB build configuration
-      # -------------------------------------------------------
       - name: Verify SSB Ant Configuration
         shell: bash
         run: |
-          echo "Available Ant targets:"
           ant -p
 
-
       # -------------------------------------------------------
-      # Download licensed IIQ base package from Azure Blob
-      #
-      # SAS URL is stored securely in GitHub Settings:
-      # Secret name: IIQ_BLOB_SAS_URL
+      # Download IdentityIQ 8.5 package from Azure Blob
       # -------------------------------------------------------
-      - name: Download IdentityIQ Base Package
+      - name: Download IdentityIQ 8.5 Base Package
         shell: bash
         env:
           IIQ_BLOB_SAS_URL: ${{ secrets.IIQ_BLOB_SAS_URL }}
         run: |
-          echo "Preparing IdentityIQ base package..."
-
           if [ -z "$IIQ_BLOB_SAS_URL" ]; then
-
             echo "::error::IIQ_BLOB_SAS_URL secret is not configured"
             exit 1
-
           fi
 
           mkdir -p base/ga
 
-          echo "Downloading IdentityIQ package from Azure Blob Storage..."
+          echo "Downloading IdentityIQ $IIQ_VERSION..."
 
           curl \
             --fail \
@@ -263,103 +215,81 @@ jobs:
             "$IIQ_BLOB_SAS_URL"
 
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
-
             echo "::error::IdentityIQ package download failed"
             exit 1
-
           fi
 
           echo "IdentityIQ package downloaded successfully"
 
           ls -lh "$IIQ_PACKAGE_PATH"
 
-
       # -------------------------------------------------------
-      # Validate downloaded ZIP
+      # Validate ZIP
       # -------------------------------------------------------
       - name: Validate IdentityIQ Package
         shell: bash
         run: |
-          echo "Validating downloaded IdentityIQ package..."
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq unzip
+          echo "Validating IdentityIQ package..."
 
           unzip -t "$IIQ_PACKAGE_PATH" > /tmp/iiq-zip-check.txt
 
           tail -n 5 /tmp/iiq-zip-check.txt
 
-          echo "IdentityIQ package ZIP validation passed"
-
+          echo "IdentityIQ package validation passed"
 
       # -------------------------------------------------------
-      # Verify package and build.properties alignment
+      # Verify IIQ version
       # -------------------------------------------------------
       - name: Verify IdentityIQ Version
         shell: bash
         run: |
-          echo "Expected IdentityIQ version: $IIQ_VERSION"
-
           BUILD_VERSION=$(grep '^IIQVersion=' build.properties \
             | cut -d '=' -f2 \
             | tr -d '\r[:space:]')
 
-          echo "build.properties IIQVersion: $BUILD_VERSION"
+          echo "Pipeline IIQ version: $IIQ_VERSION"
+          echo "build.properties IIQ version: $BUILD_VERSION"
 
           if [ "$BUILD_VERSION" != "$IIQ_VERSION" ]; then
-
-            echo "::error::Version mismatch. Blob package is configured for IIQ $IIQ_VERSION but build.properties uses $BUILD_VERSION"
-
+            echo "::error::IdentityIQ version mismatch"
             exit 1
-
           fi
 
           echo "IdentityIQ versions match"
 
-
       # -------------------------------------------------------
-      # SSB compilation/build validation
-      #
-      # No unit-test/JUnit step for current POC.
+      # SSB build / compilation
+      # Unit tests are not included in current POC.
       # -------------------------------------------------------
       - name: Compile and Validate SSB
         shell: bash
         run: |
           export SPTARGET="$SPTARGET"
 
-          echo "Running SSB build for target: $SPTARGET"
+          echo "Running SailPoint SSB build..."
 
           ant main
 
+      # -------------------------------------------------------
+      # Dependency vulnerability scan intentionally deferred.
+      #
+      # Existing ant dependency-check fails while retrieving
+      # NVD vulnerability data.
+      #
+      # To be addressed separately after confirmation from
+      # SailPoint/Security team.
+      # -------------------------------------------------------
 
-      # -------------------------------------------------------
-      # Dependency/security validation
-      # -------------------------------------------------------
-      - name: Run Dependency Security Check
+      - name: Build Validation Summary
         shell: bash
         run: |
-          export SPTARGET="$SPTARGET"
-
-          echo "Running dependency security scan..."
-
-          ant dependency-check
+          echo "SSB build completed successfully."
+          echo "Dependency vulnerability scanning is deferred for the current POC."
 
 
-      # -------------------------------------------------------
-      # Upload dependency scan report
-      # -------------------------------------------------------
-      - name: Publish Dependency Check Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-reports
-          path: build/dependency-check-reports/**
-          if-no-files-found: ignore
-
-
-  # ==========================================================
-  # JOB 3 - BUILD VERSIONED DEPLOYMENT ARTIFACT
-  # ==========================================================
+  # =========================================================
+  # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
+  # =========================================================
   artifact:
     name: Build and Publish IdentityIQ Artifact
 
@@ -374,40 +304,37 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-
       - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-
       - name: Install Apache Ant
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ant
+          sudo apt-get install -y -qq ant unzip
 
           ant -version
 
-
       # -------------------------------------------------------
-      # Every GitHub job starts on a new runner.
-      # Therefore download IIQ package again for WAR build.
+      # Every GitHub Actions job gets a clean runner.
+      # Download IIQ package again before WAR generation.
       # -------------------------------------------------------
-      - name: Download IdentityIQ Base Package
+      - name: Download IdentityIQ 8.5 Base Package
         shell: bash
         env:
           IIQ_BLOB_SAS_URL: ${{ secrets.IIQ_BLOB_SAS_URL }}
         run: |
           if [ -z "$IIQ_BLOB_SAS_URL" ]; then
-
             echo "::error::IIQ_BLOB_SAS_URL secret is not configured"
             exit 1
-
           fi
 
           mkdir -p base/ga
+
+          echo "Downloading IdentityIQ $IIQ_VERSION..."
 
           curl \
             --fail \
@@ -418,19 +345,16 @@ jobs:
             "$IIQ_BLOB_SAS_URL"
 
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
-
             echo "::error::IdentityIQ package download failed"
             exit 1
-
           fi
 
           echo "IdentityIQ package downloaded successfully"
 
           ls -lh "$IIQ_PACKAGE_PATH"
 
-
       # -------------------------------------------------------
-      # Build WAR
+      # Generate WAR
       # -------------------------------------------------------
       - name: Build IdentityIQ WAR
         shell: bash
@@ -441,19 +365,16 @@ jobs:
 
           ant war
 
-
       # -------------------------------------------------------
-      # Verify + version + SHA256 checksum
+      # Verify and version WAR
       # -------------------------------------------------------
       - name: Version Deployment Artifact
         id: artifact
         shell: bash
         run: |
           if [ ! -f "$WAR_PATH" ]; then
-
             echo "::error::WAR not found at $WAR_PATH"
             exit 1
-
           fi
 
           SHORT_SHA="${GITHUB_SHA::7}"
@@ -463,15 +384,14 @@ jobs:
           mkdir -p dist
 
           cp "$WAR_PATH" \
-             "dist/${ARTIFACT_NAME}.war"
+            "dist/${ARTIFACT_NAME}.war"
 
           cd dist
 
           sha256sum "${ARTIFACT_NAME}.war" \
             > "${ARTIFACT_NAME}.war.sha256"
 
-          echo "artifact_name=$ARTIFACT_NAME" \
-            >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
           echo "Artifact created:"
           echo "${ARTIFACT_NAME}.war"
@@ -479,9 +399,8 @@ jobs:
           echo "Checksum:"
           cat "${ARTIFACT_NAME}.war.sha256"
 
-
       # -------------------------------------------------------
-      # Publish deployment artifact
+      # Publish WAR artifact
       # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
         uses: actions/upload-artifact@v4
