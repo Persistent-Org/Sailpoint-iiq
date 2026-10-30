@@ -8,11 +8,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test QA HTTP connectivity
+      - name: Test QA HTTP Connectivity
         shell: bash
         run: |
-          echo "Testing connectivity to QA server..."
+          echo "Testing connectivity to QA IdentityIQ server..."
 
-          curl -v \
+          HTTP_STATUS=$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out "%{http_code}" \
             --connect-timeout 10 \
-            http://20.115.57.209:8080/identityiq/login.jsf
+            --max-time 20 \
+            http://20.115.57.209:8080/identityiq/login.jsf)
+
+          echo "HTTP Status: $HTTP_STATUS"
+
+          if [[ "$HTTP_STATUS" =~ ^(200|301|302|401|403)$ ]]; then
+            echo "QA server is reachable from GitHub-hosted runner."
+          else
+            echo "::error::QA connectivity test failed. HTTP status: $HTTP_STATUS"
+            exit 1
+          fi
