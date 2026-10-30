@@ -11,7 +11,7 @@ jobs:
       - name: Test QA HTTP Connectivity
         shell: bash
         run: |
-          echo "Testing connectivity to QA IdentityIQ server..."
+          echo "Testing QA IdentityIQ connectivity..."
 
           HTTP_STATUS=$(curl \
             --silent \
@@ -25,8 +25,8 @@ jobs:
           echo "HTTP Status: $HTTP_STATUS"
 
           if [[ "$HTTP_STATUS" =~ ^(200|301|302|401|403)$ ]]; then
-            echo "QA server is reachable from GitHub-hosted runner."
+            echo "SUCCESS: QA IdentityIQ server is reachable."
           else
-            echo "::error::QA connectivity test failed. HTTP status: $HTTP_STATUS"
+            echo "::error::QA connectivity failed. HTTP Status: $HTTP_STATUS"
             exit 1
           fi
