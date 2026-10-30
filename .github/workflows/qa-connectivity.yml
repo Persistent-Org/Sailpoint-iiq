@@ -1,6 +1,10 @@
 name: QA Connectivity Test
 
 on:
+  push:
+    branches:
+      - "feature/iiq85-qa-cd-pipeline"
+
   workflow_dispatch:
 
 jobs:
@@ -25,7 +29,7 @@ jobs:
           echo "HTTP Status: $HTTP_STATUS"
 
           if [[ "$HTTP_STATUS" =~ ^(200|301|302|401|403)$ ]]; then
-            echo "SUCCESS: QA IdentityIQ server is reachable."
+            echo "SUCCESS: QA IdentityIQ server is reachable from GitHub-hosted runner."
           else
             echo "::error::QA connectivity failed. HTTP Status: $HTTP_STATUS"
             exit 1
