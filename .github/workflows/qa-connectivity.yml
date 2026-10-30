@@ -1,0 +1,18 @@
+name: QA Connectivity Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-qa-connectivity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test QA HTTP connectivity
+        shell: bash
+        run: |
+          echo "Testing connectivity to QA server..."
+
+          curl -v \
+            --connect-timeout 10 \
+            http://20.115.57.209:8080/identityiq/login.jsf
