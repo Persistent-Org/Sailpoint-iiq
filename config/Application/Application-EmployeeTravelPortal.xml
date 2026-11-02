@@ -1,0 +1,229 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Application PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Application connector="sailpoint.connector.JDBCConnector" featuresString="DISCOVER_SCHEMA, PROVISIONING, SYNC_PROVISIONING, DIRECT_PERMISSIONS, SEARCH, ENABLE, UNLOCK" icon="databaseIcon" name="Employee Travel Portal" profileClass="spadmin" type="JDBC">
+  <AccountCorrelationConfig>
+    <Reference class="sailpoint.object.CorrelationConfig" name="JDBC Account Correlation Rule"/>
+  </AccountCorrelationConfig>
+  <Attributes>
+    <Map>
+      <entry key="SQL" value="SELECT * FROM psl.employee;"/>
+      <entry key="afterProvisioningRule"/>
+      <entry key="aggregationMode">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="aggregationPartitioned">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="aggregationType" value="account"/>
+      <entry key="beforeProvisioningRule"/>
+      <entry key="compositeDefinition"/>
+      <entry key="connMaxRetry" value="3"/>
+      <entry key="connRetryEnable">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="connWaitTimeForRetry" value="2"/>
+      <entry key="deltaTable"/>
+      <entry key="driverClass" value="com.mysql.cj.jdbc.Driver"/>
+      <entry key="getDeltaSQL"/>
+      <entry key="group.SQL" value="SELECT * FROM psl.group;"/>
+      <entry key="group.aggregationMode">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.deltaTable"/>
+      <entry key="group.driverClass" value="com.mysql.cj.jdbc.Driver"/>
+      <entry key="group.getDeltaSQL"/>
+      <entry key="group.isPermissionEnabled">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.mergeRows">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.password" value="1:ACP:TSwSs80GLYenbEDVqISMNUYuQUf+mpx5KyNc9kJlj2A="/>
+      <entry key="group.url" value="jdbc:mysql://localhost:3306/psl"/>
+      <entry key="group.useExecuteQuery">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.useStoredProcedureDelta">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.useStoredProcedureDirectPermission">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.useStoredProcedureGetObject">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.useStoredProcedureSqlStmt">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="group.user" value="root"/>
+      <entry key="isPermissionEnabled">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="jdbcCreateProvisioningRule" value="JDBC Create Account Rule"/>
+      <entry key="jdbcExceptionBucketing">
+        <value>
+          <Boolean>true</Boolean>
+        </value>
+      </entry>
+      <entry key="jdbcModifyProvisioningRule" value="JDBC Modify Rule"/>
+      <entry key="mergeRows">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="nativeChangeDetectionAttributeScope" value="entitlements"/>
+      <entry key="nativeChangeDetectionAttributes"/>
+      <entry key="nativeChangeDetectionEnabled">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="nativeChangeDetectionOperations"/>
+      <entry key="noPermissions" value="false"/>
+      <entry key="operations" value="Create, Modify, Delete, Enable, Disable, Unlock"/>
+      <entry key="partitionMode">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="partitionStatements"/>
+      <entry key="password" value="1:ACP:nMFhxYyiBj5GkIWMPbMJ/1PIaIqrfcIrvTZbl666Jns="/>
+      <entry key="provisionRule" value="operationRule"/>
+      <entry key="sysDescriptions">
+        <value>
+          <Map>
+            <entry key="en_US"/>
+          </Map>
+        </value>
+      </entry>
+      <entry key="templateApplication" value="JDBC Template"/>
+      <entry key="testConnSQL" value="SELECT * FROM psl.employee;"/>
+      <entry key="url" value="jdbc:mysql://localhost:3306/psl"/>
+      <entry key="useExecuteQuery">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedureDelta">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedureDirectPermission">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedureGetObject">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedurePartition">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedureSqlStmt">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="useStoredProcedureTestConn">
+        <value>
+          <Boolean/>
+        </value>
+      </entry>
+      <entry key="user" value="root"/>
+    </Map>
+  </Attributes>
+  <Owner>
+    <Reference class="sailpoint.object.Identity" name="spadmin"/>
+  </Owner>
+  <ProvisioningForms>
+    <Form name="Create Account" objectType="account" type="Create">
+      <Attributes>
+        <Map>
+          <entry key="pageTitle" value="Create Account"/>
+        </Map>
+      </Attributes>
+      <Section name="Section 1">
+        <Field displayName="EMPID" name="empid" required="true" type="string">
+          <Script>
+            <Source><![CDATA[return identity.getAttribute("userid");]]></Source>
+          </Script>
+        </Field>
+        <Field displayName="First Name" name="firstname" required="true" type="string">
+          <Script>
+            <Source><![CDATA[return identity.getFirstname();]]></Source>
+          </Script>
+        </Field>
+        <Field displayName="Last Name" name="lastname" required="true" type="string">
+          <Script>
+            <Source><![CDATA[return identity.getLastname();]]></Source>
+          </Script>
+        </Field>
+        <Field displayName="Status" name="status" type="string">
+          <Script>
+            <Source><![CDATA[return "Enabled";]]></Source>
+          </Script>
+        </Field>
+      </Section>
+    </Form>
+  </ProvisioningForms>
+  <Schemas>
+    <Schema displayAttribute="empid" identityAttribute="empid" instanceAttribute="" nativeObjectType="account" objectType="account" permissionsRemediationModificationType="None">
+      <AttributeDefinition name="empid" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition name="firstname" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition name="lastname" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition name="status" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition entitlement="true" managed="true" multi="true" name="group_names" schemaObjectType="group" type="string">
+        <Description/>
+      </AttributeDefinition>
+    </Schema>
+    <Schema descriptionAttribute="" displayAttribute="name" identityAttribute="name" instanceAttribute="" nativeObjectType="group" objectType="group" permissionsRemediationModificationType="None">
+      <AttributeDefinition name="id" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition name="name" type="string">
+        <Description/>
+      </AttributeDefinition>
+      <AttributeDefinition name="description" type="string">
+        <Description/>
+      </AttributeDefinition>
+    </Schema>
+  </Schemas>
+  <ApplicationScorecard/>
+</Application>
