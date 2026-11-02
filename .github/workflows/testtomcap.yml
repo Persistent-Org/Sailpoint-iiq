@@ -14,31 +14,40 @@ jobs:
       - Windows
 
     steps:
-      - name: Test Tomcat permissions
+
+      - name: Check Runner Identity and Permissions
         shell: powershell
         run: |
           Write-Host "===== RUNNER IDENTITY ====="
           whoami
 
-          Write-Host "===== USER DETAILS ====="
+          Write-Host "===== USER SID ====="
           whoami /user
+
+          Write-Host "===== USER GROUPS ====="
+          whoami /groups
 
           Write-Host "===== TOMCAT CURRENT STATUS ====="
           sc.exe query Tomcat9
 
+      - name: Test Tomcat permissions
+        shell: powershell
+        run: |
           Write-Host "===== STOP TOMCAT USING SC.EXE ====="
+
           sc.exe stop Tomcat9
 
           if ($LASTEXITCODE -ne 0) {
               throw "sc.exe could not stop Tomcat9. Exit code: $LASTEXITCODE"
           }
 
-          Write-Host "===== WAITING ====="
+          Write-Host "===== WAITING FOR TOMCAT TO STOP ====="
 
           $timeout = 60
           $elapsed = 0
 
           while ($elapsed -lt $timeout) {
+
               $output = sc.exe query Tomcat9
               $output | Write-Host
 
@@ -54,3 +63,9 @@ jobs:
           if ($elapsed -ge $timeout) {
               throw "Tomcat did not stop within 60 seconds."
           }
+
+      - name: Final Tomcat Status
+        shell: powershell
+        run: |
+          Write-Host "===== FINAL TOMCAT STATUS ====="
+          sc.exe query Tomcat9
