@@ -1,0 +1,18 @@
+name: Verify QA Deployment Account
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify-account:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    steps:
+      - name: Verify Runner Account
+        shell: powershell
+        run: |
+          Write-Host "GitHub runner is executing as:"
+          whoami
