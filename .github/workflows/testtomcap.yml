@@ -43,7 +43,7 @@ jobs:
 
           Write-Host "===== WAITING FOR TOMCAT TO STOP ====="
 
-          $timeout = 60
+          $timeout = 180
           $elapsed = 0
 
           while ($elapsed -lt $timeout) {
