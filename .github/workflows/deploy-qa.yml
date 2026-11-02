@@ -1,0 +1,538 @@
+name: CD - Deploy SailPoint IIQ to QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: "Successful CI workflow run ID containing the WAR artifact"
+        required: true
+        type: string
+
+      artifact_name:
+        description: "CI artifact name, for example identityiq-5-4b4a866"
+        required: true
+        type: string
+
+      change_reference:
+        description: "Change request or deployment reference"
+        required: false
+        default: "QA-POC"
+        type: string
+
+concurrency:
+  group: sailpoint-qa-deployment
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy-qa:
+    name: Deploy IdentityIQ WAR to QA
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    timeout-minutes: 45
+
+    env:
+      TOMCAT_SERVICE: "Tomcat9"
+
+      TOMCAT_HOME: >-
+        C:\Program Files\Apache Software Foundation\Tomcat 9.0
+
+      WEBAPPS_PATH: >-
+        C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps
+
+      CURRENT_WAR: >-
+        C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war
+
+      EXPANDED_APP: >-
+        C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq
+
+      ROLLBACK_ROOT: "C:\SailPoint-Rollback"
+
+      QA_URL: "http://localhost:8080/identityiq/login.jsf"
+
+      DOWNLOAD_PATH: "${{ github.workspace }}\\downloaded-artifact"
+
+    steps:
+
+      # =======================================================
+      # 1. Show deployment information
+      # =======================================================
+      - name: Show Deployment Information
+        shell: powershell
+        run: |
+          Write-Host "============================================="
+          Write-Host "SailPoint IdentityIQ QA Deployment"
+          Write-Host "============================================="
+          Write-Host "Runner machine : $env:COMPUTERNAME"
+          Write-Host "Runner account : $(whoami)"
+          Write-Host "CI run ID      : ${{ inputs.ci_run_id }}"
+          Write-Host "Artifact       : ${{ inputs.artifact_name }}"
+          Write-Host "Change reference: ${{ inputs.change_reference }}"
+          Write-Host "QA URL         : $env:QA_URL"
+
+      # =======================================================
+      # 2. Verify runner permissions and QA paths
+      # =======================================================
+      - name: Validate QA Deployment Prerequisites
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Validating QA deployment prerequisites..."
+
+          if (-not (Test-Path $env:WEBAPPS_PATH)) {
+            throw "Tomcat webapps path not found: $env:WEBAPPS_PATH"
+          }
+
+          if (-not (Test-Path $env:CURRENT_WAR)) {
+            throw "Current IdentityIQ WAR not found: $env:CURRENT_WAR"
+          }
+
+          if (-not (Test-Path $env:EXPANDED_APP)) {
+            throw "Expanded IdentityIQ directory not found: $env:EXPANDED_APP"
+          }
+
+          $tomcat = Get-Service `
+            -Name $env:TOMCAT_SERVICE `
+            -ErrorAction Stop
+
+          Write-Host "Tomcat service status: $($tomcat.Status)"
+
+          # Test whether the runner can create a file under webapps.
+          $permissionTest = Join-Path `
+            $env:WEBAPPS_PATH `
+            "github-runner-permission-test.tmp"
+
+          try {
+            Set-Content `
+              -Path $permissionTest `
+              -Value "GitHub runner permission test" `
+              -ErrorAction Stop
+
+            Remove-Item `
+              -Path $permissionTest `
+              -Force `
+              -ErrorAction Stop
+
+            Write-Host "Runner has write access to Tomcat webapps."
+          }
+          catch {
+            throw "Runner cannot write to Tomcat webapps. Grant Modify permission to the runner service account. Error: $($_.Exception.Message)"
+          }
+
+      # =======================================================
+      # 3. Download CI artifact
+      # =======================================================
+      - name: Prepare Artifact Download Folder
+        shell: powershell
+        run: |
+          if (Test-Path $env:DOWNLOAD_PATH) {
+            Remove-Item `
+              -Path $env:DOWNLOAD_PATH `
+              -Recurse `
+              -Force
+          }
+
+          New-Item `
+            -Path $env:DOWNLOAD_PATH `
+            -ItemType Directory `
+            -Force | Out-Null
+
+      - name: Download CI WAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ env.DOWNLOAD_PATH }}
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # =======================================================
+      # 4. Locate and verify downloaded WAR
+      # =======================================================
+      - name: Locate Downloaded WAR
+        id: downloaded-war
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Downloaded artifact contents:"
+
+          Get-ChildItem `
+            -Path $env:DOWNLOAD_PATH `
+            -Recurse |
+            Format-Table FullName, Length
+
+          $war = Get-ChildItem `
+            -Path $env:DOWNLOAD_PATH `
+            -Filter "*.war" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $war) {
+            throw "No WAR file found in the downloaded CI artifact."
+          }
+
+          $checksum = Get-ChildItem `
+            -Path $env:DOWNLOAD_PATH `
+            -Filter "*.war.sha256" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $checksum) {
+            throw "No SHA256 checksum file found in the CI artifact."
+          }
+
+          Write-Host "WAR found      : $($war.FullName)"
+          Write-Host "Checksum found : $($checksum.FullName)"
+
+          "war_path=$($war.FullName)" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append `
+              -Encoding utf8
+
+          "checksum_path=$($checksum.FullName)" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append `
+              -Encoding utf8
+
+      - name: Verify WAR SHA256
+        shell: powershell
+        env:
+          DOWNLOADED_WAR: ${{ steps.downloaded-war.outputs.war_path }}
+          CHECKSUM_FILE: ${{ steps.downloaded-war.outputs.checksum_path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $expectedLine = (
+            Get-Content `
+              -Path $env:CHECKSUM_FILE `
+              -Raw
+          ).Trim()
+
+          $expectedHash = (
+            $expectedLine -split "\s+"
+          )[0].ToUpperInvariant()
+
+          $actualHash = (
+            Get-FileHash `
+              -Path $env:DOWNLOADED_WAR `
+              -Algorithm SHA256
+          ).Hash.ToUpperInvariant()
+
+          Write-Host "Expected SHA256: $expectedHash"
+          Write-Host "Actual SHA256  : $actualHash"
+
+          if ($expectedHash -ne $actualHash) {
+            throw "WAR checksum verification failed."
+          }
+
+          Write-Host "WAR checksum verification passed."
+
+      # =======================================================
+      # 5. Create rollback backup
+      # =======================================================
+      - name: Create Rollback Backup
+        id: rollback
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+
+          $rollbackFolder = Join-Path `
+            $env:ROLLBACK_ROOT `
+            $timestamp
+
+          New-Item `
+            -Path $rollbackFolder `
+            -ItemType Directory `
+            -Force | Out-Null
+
+          $rollbackWar = Join-Path `
+            $rollbackFolder `
+            "identityiq.war"
+
+          Copy-Item `
+            -Path $env:CURRENT_WAR `
+            -Destination $rollbackWar `
+            -Force
+
+          $backupHash = (
+            Get-FileHash `
+              -Path $rollbackWar `
+              -Algorithm SHA256
+          ).Hash
+
+          Set-Content `
+            -Path (
+              Join-Path `
+                $rollbackFolder `
+                "identityiq.war.sha256"
+            ) `
+            -Value "$backupHash  identityiq.war"
+
+          Write-Host "Rollback backup created:"
+          Write-Host $rollbackWar
+
+          "rollback_folder=$rollbackFolder" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append `
+              -Encoding utf8
+
+          "rollback_war=$rollbackWar" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append `
+              -Encoding utf8
+
+      # =======================================================
+      # 6. Deploy WAR to QA
+      # =======================================================
+      - name: Deploy IdentityIQ WAR to QA
+        id: deployment
+        shell: powershell
+        env:
+          DOWNLOADED_WAR: ${{ steps.downloaded-war.outputs.war_path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          try {
+            Write-Host "Stopping Tomcat service..."
+
+            Stop-Service `
+              -Name $env:TOMCAT_SERVICE `
+              -Force `
+              -ErrorAction Stop
+
+            $tomcat = Get-Service `
+              -Name $env:TOMCAT_SERVICE
+
+            $tomcat.WaitForStatus(
+              "Stopped",
+              (New-TimeSpan -Seconds 60)
+            )
+
+            Write-Host "Tomcat stopped."
+
+            if (Test-Path $env:EXPANDED_APP) {
+              Write-Host "Removing existing expanded IdentityIQ directory..."
+
+              Remove-Item `
+                -Path $env:EXPANDED_APP `
+                -Recurse `
+                -Force `
+                -ErrorAction Stop
+            }
+
+            Write-Host "Replacing current IdentityIQ WAR..."
+
+            Copy-Item `
+              -Path $env:DOWNLOADED_WAR `
+              -Destination $env:CURRENT_WAR `
+              -Force `
+              -ErrorAction Stop
+
+            Write-Host "New WAR deployed:"
+            Write-Host $env:CURRENT_WAR
+
+            Write-Host "Starting Tomcat service..."
+
+            Start-Service `
+              -Name $env:TOMCAT_SERVICE `
+              -ErrorAction Stop
+
+            $tomcat = Get-Service `
+              -Name $env:TOMCAT_SERVICE
+
+            $tomcat.WaitForStatus(
+              "Running",
+              (New-TimeSpan -Seconds 90)
+            )
+
+            Write-Host "Tomcat started."
+
+            "deployment_completed=true" |
+              Out-File `
+                -FilePath $env:GITHUB_OUTPUT `
+                -Append `
+                -Encoding utf8
+          }
+          catch {
+            Write-Host "::error::QA deployment failed: $($_.Exception.Message)"
+
+            "deployment_completed=false" |
+              Out-File `
+                -FilePath $env:GITHUB_OUTPUT `
+                -Append `
+                -Encoding utf8
+
+            throw
+          }
+
+      # =======================================================
+      # 7. Smoke test
+      # =======================================================
+      - name: Wait for IdentityIQ Startup
+        shell: powershell
+        run: |
+          Write-Host "Waiting for IdentityIQ deployment and startup..."
+          Start-Sleep -Seconds 45
+
+      - name: Smoke Test IdentityIQ
+        id: smoke-test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $maximumAttempts = 12
+          $sleepSeconds = 10
+          $success = $false
+
+          for (
+            $attempt = 1;
+            $attempt -le $maximumAttempts;
+            $attempt++
+          ) {
+            try {
+              Write-Host "Smoke test attempt $attempt of $maximumAttempts..."
+
+              $response = Invoke-WebRequest `
+                -Uri $env:QA_URL `
+                -UseBasicParsing `
+                -TimeoutSec 20
+
+              Write-Host "HTTP Status: $($response.StatusCode)"
+
+              if ($response.StatusCode -eq 200) {
+                $success = $true
+                break
+              }
+            }
+            catch {
+              Write-Host "IdentityIQ not ready: $($_.Exception.Message)"
+            }
+
+            Start-Sleep -Seconds $sleepSeconds
+          }
+
+          if (-not $success) {
+            "smoke_test_passed=false" |
+              Out-File `
+                -FilePath $env:GITHUB_OUTPUT `
+                -Append `
+                -Encoding utf8
+
+            throw "IdentityIQ smoke test failed."
+          }
+
+          "smoke_test_passed=true" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "IdentityIQ QA smoke test passed."
+
+      # =======================================================
+      # 8. Roll back automatically on deployment/test failure
+      # =======================================================
+      - name: Roll Back Previous IdentityIQ WAR
+        if: failure() && steps.rollback.outputs.rollback_war != ''
+        shell: powershell
+        env:
+          ROLLBACK_WAR: ${{ steps.rollback.outputs.rollback_war }}
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "Deployment failed. Starting rollback..."
+
+          Stop-Service `
+            -Name $env:TOMCAT_SERVICE `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 5
+
+          if (Test-Path $env:EXPANDED_APP) {
+            Remove-Item `
+              -Path $env:EXPANDED_APP `
+              -Recurse `
+              -Force `
+              -ErrorAction SilentlyContinue
+          }
+
+          if (-not (Test-Path $env:ROLLBACK_WAR)) {
+            throw "Rollback WAR not found: $env:ROLLBACK_WAR"
+          }
+
+          Copy-Item `
+            -Path $env:ROLLBACK_WAR `
+            -Destination $env:CURRENT_WAR `
+            -Force
+
+          Start-Service `
+            -Name $env:TOMCAT_SERVICE `
+            -ErrorAction Stop
+
+          Start-Sleep -Seconds 45
+
+          try {
+            $response = Invoke-WebRequest `
+              -Uri $env:QA_URL `
+              -UseBasicParsing `
+              -TimeoutSec 20
+
+            Write-Host "Rollback HTTP status: $($response.StatusCode)"
+
+            if ($response.StatusCode -ne 200) {
+              throw "Rollback validation returned a non-200 status."
+            }
+
+            Write-Host "Rollback completed successfully."
+          }
+          catch {
+            Write-Host "::error::Rollback validation failed: $($_.Exception.Message)"
+            throw
+          }
+
+      # =======================================================
+      # 9. Deployment summary
+      # =======================================================
+      - name: Publish Deployment Summary
+        if: success()
+        shell: powershell
+        run: |
+          $deployedHash = (
+            Get-FileHash `
+              -Path $env:CURRENT_WAR `
+              -Algorithm SHA256
+          ).Hash
+
+          @"
+          ## SailPoint IdentityIQ QA Deployment
+
+          - Change reference: ${{ inputs.change_reference }}
+          - CI run ID: ${{ inputs.ci_run_id }}
+          - Artifact: ${{ inputs.artifact_name }}
+          - QA machine: $env:COMPUTERNAME
+          - Tomcat service: $env:TOMCAT_SERVICE
+          - QA URL: $env:QA_URL
+          - Deployment status: SUCCESS
+          - Smoke test: PASSED
+          - Deployed WAR SHA256: $deployedHash
+          - Rollback folder: ${{ steps.rollback.outputs.rollback_folder }}
+          "@ |
+            Out-File `
+              -FilePath $env:GITHUB_STEP_SUMMARY `
+              -Append `
+              -Encoding utf8
