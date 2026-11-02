@@ -1,0 +1,47 @@
+name: QA Self Hosted Runner Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feature/iiq85-qa-cd-pipeline"
+
+jobs:
+  test:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    steps:
+      - name: Runner Information
+        shell: powershell
+        run: |
+          Write-Host "Self-hosted runner connected successfully"
+          Write-Host "Machine:"
+          hostname
+
+          Write-Host "Service account:"
+          whoami
+
+          Write-Host "Working directory:"
+          Get-Location
+
+      - name: Check Tomcat Service
+        shell: powershell
+        run: |
+          Get-Service | Where-Object {
+            $_.Name -like "*Tomcat*" -or
+            $_.DisplayName -like "*Tomcat*"
+          }
+
+      - name: Test IdentityIQ
+        shell: powershell
+        run: |
+          $response = Invoke-WebRequest `
+            -Uri "http://localhost:8080/identityiq/login.jsf" `
+            -UseBasicParsing `
+            -TimeoutSec 20
+
+          Write-Host "HTTP Status:" $response.StatusCode
+          Write-Host "IdentityIQ QA connectivity successful"
