@@ -1,0 +1,91 @@
+name: Test IIQ Access
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - "feature/iiq85-qa-cd-pipeline"
+
+jobs:
+  test-iiq:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    steps:
+      - name: Show Runner Information
+        shell: powershell
+        run: |
+          Write-Host "Self-hosted runner connected successfully"
+          Write-Host "Machine:"
+          hostname
+          Write-Host "Runner Service Account:"
+          whoami
+          Write-Host "Working Directory:"
+          Get-Location
+
+      - name: Check IdentityIQ Bin Folder
+        shell: cmd
+        run: |
+          dir "C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin"
+
+      - name: Verify IIQ Command
+        shell: cmd
+        run: |
+          if exist "C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin\iiq.bat" (
+            echo IdentityIQ command found successfully
+          ) else (
+            echo ERROR: iiq.bat not found
+            exit /b 1
+          )
+
+      - name: Check IIQ Console
+        shell: cmd
+        run: |
+          cd /d "C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin"
+          echo exit | call iiq.bat console
+
+      - name: Check Tomcat Service
+        shell: powershell
+        run: |
+          $tomcat = Get-Service -Name "Tomcat9" -ErrorAction Stop
+          Write-Host "Tomcat Status:" $tomcat.Status
+
+          if ($tomcat.Status -ne "Running") {
+            throw "Tomcat9 service is not running"
+          }
+
+          Write-Host "Tomcat9 is running"
+
+      - name: Test IdentityIQ Application
+        shell: powershell
+        run: |
+          $url = "http://localhost:8080/identityiq/login.jsf"
+
+          Write-Host "Testing IdentityIQ URL: $url"
+
+          $response = Invoke-WebRequest `
+            -Uri $url `
+            -UseBasicParsing `
+            -TimeoutSec 20
+
+          Write-Host "HTTP Status:" $response.StatusCode
+
+          if ($response.StatusCode -ne 200) {
+            throw "IdentityIQ connectivity test failed"
+          }
+
+          Write-Host "IdentityIQ QA access validation successful"
+
+      - name: Test Summary
+        shell: powershell
+        run: |
+          Write-Host "QA Self-Hosted Runner Test PASSED"
+          Write-Host "Runner      : Connected"
+          Write-Host "IIQ Folder  : Accessible"
+          Write-Host "IIQ Command : Available"
+          Write-Host "IIQ Console : Executed"
+          Write-Host "Tomcat      : Running"
+          Write-Host "IdentityIQ  : Reachable"
