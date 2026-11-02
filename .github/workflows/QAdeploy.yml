@@ -3,6 +3,9 @@ name: Verify QA Deployment Account
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - "feature/iiq85-qa-cd-pipeline"
 jobs:
   verify-account:
     runs-on:
