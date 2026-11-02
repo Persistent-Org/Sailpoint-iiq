@@ -1,19 +1,54 @@
 name: Deploy IdentityIQ to QA
 
 on:
+  # Manual CD deployment
   workflow_dispatch:
     inputs:
       run_id:
-        description: "CI workflow Run ID"
+        description: "Successful CI workflow Run ID"
         required: true
         type: string
+
+  # Register/test workflow after pushing changes
+  push:
+    branches:
+      - feature/iiq85-qa-cd-pipeline
 
 permissions:
   actions: read
   contents: read
 
 jobs:
+
+  # =========================================================
+  # PUSH VALIDATION
+  # This runs only when the YAML is pushed.
+  # It does NOT deploy to QA.
+  # =========================================================
+
+  validate-cd-workflow:
+    if: github.event_name == 'push'
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    steps:
+      - name: CD Workflow Push Validation
+        shell: powershell
+        run: |
+          Write-Host "CD workflow updated successfully."
+          Write-Host "Branch: $env:GITHUB_REF_NAME"
+          Write-Host "Actual QA deployment must be started manually."
+
+
+  # =========================================================
+  # MANUAL QA DEPLOYMENT
+  # =========================================================
+
   deploy-to-qa:
+    if: github.event_name == 'workflow_dispatch'
+
     name: Deploy IdentityIQ WAR to QA
 
     runs-on:
@@ -22,17 +57,22 @@ jobs:
 
     env:
       TOMCAT_SERVICE: Tomcat9
+
       TOMCAT_WEBAPPS: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps'
+
       IIQ_WAR: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war'
+
       IIQ_EXPLODED: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq'
+
       DOWNLOAD_DIR: 'C:\actions-runner\_work\_deploy\iiq'
+
       BACKUP_DIR: 'C:\IIQ_Backup'
 
     steps:
 
-      # =========================================================
-      # 1. CHECK RUNNER
-      # =========================================================
+      # =====================================================
+      # 1. RUNNER INFORMATION
+      # =====================================================
 
       - name: Show Runner Information
         shell: powershell
@@ -47,9 +87,9 @@ jobs:
           sc.exe query $env:TOMCAT_SERVICE
 
 
-      # =========================================================
+      # =====================================================
       # 2. PREPARE DOWNLOAD DIRECTORY
-      # =========================================================
+      # =====================================================
 
       - name: Prepare Download Directory
         shell: powershell
@@ -57,7 +97,10 @@ jobs:
           Write-Host "===== PREPARE DOWNLOAD DIRECTORY ====="
 
           if (Test-Path $env:DOWNLOAD_DIR) {
-              Remove-Item $env:DOWNLOAD_DIR -Recurse -Force
+              Remove-Item `
+                -Path $env:DOWNLOAD_DIR `
+                -Recurse `
+                -Force
           }
 
           New-Item `
@@ -69,9 +112,9 @@ jobs:
           Write-Host $env:DOWNLOAD_DIR
 
 
-      # =========================================================
-      # 3. DOWNLOAD DYNAMIC CI ARTIFACT
-      # =========================================================
+      # =====================================================
+      # 3. DOWNLOAD CI ARTIFACT DYNAMICALLY
+      # =====================================================
 
       - name: Download CI Artifact
         uses: actions/download-artifact@v4
@@ -82,9 +125,9 @@ jobs:
           run-id: ${{ inputs.run_id }}
 
 
-      # =========================================================
+      # =====================================================
       # 4. LOCATE WAR
-      # =========================================================
+      # =====================================================
 
       - name: Locate WAR
         shell: powershell
@@ -95,17 +138,27 @@ jobs:
             -Path $env:DOWNLOAD_DIR `
             -Recurse
 
-          $war = Get-ChildItem `
-            -Path $env:DOWNLOAD_DIR `
-            -Recurse `
-            -Filter "*.war" |
-            Select-Object -First 1
+          $warFiles = @(
+              Get-ChildItem `
+                -Path $env:DOWNLOAD_DIR `
+                -Recurse `
+                -Filter "*.war" `
+                -File
+          )
 
-          if (-not $war) {
-              throw "No WAR file found in downloaded CI artifact."
+          if ($warFiles.Count -eq 0) {
+              throw "No WAR file found in CI artifact."
           }
 
-          Write-Host "WAR found:"
+          if ($warFiles.Count -gt 1) {
+              Write-Host "WAR files found:"
+              $warFiles.FullName | Write-Host
+              throw "Multiple WAR files found. Deployment stopped to avoid deploying the wrong WAR."
+          }
+
+          $war = $warFiles[0]
+
+          Write-Host "WAR located:"
           Write-Host $war.FullName
 
           "WAR_PATH=$($war.FullName)" |
@@ -115,20 +168,24 @@ jobs:
             -Append
 
 
-      # =========================================================
-      # 5. HASH DOWNLOADED WAR
-      # =========================================================
+      # =====================================================
+      # 5. CALCULATE SOURCE WAR SHA256
+      # =====================================================
 
       - name: Calculate Downloaded WAR SHA256
         shell: powershell
         run: |
-          Write-Host "===== DOWNLOADED WAR SHA256 ====="
+          Write-Host "===== SOURCE WAR SHA256 ====="
 
           $hash = Get-FileHash `
             -Path $env:WAR_PATH `
             -Algorithm SHA256
 
-          $hash | Format-List
+          Write-Host "WAR:"
+          Write-Host $hash.Path
+
+          Write-Host "SHA256:"
+          Write-Host $hash.Hash
 
           "SOURCE_WAR_HASH=$($hash.Hash)" |
             Out-File `
@@ -137,9 +194,9 @@ jobs:
             -Append
 
 
-      # =========================================================
+      # =====================================================
       # 6. PREPARE ROLLBACK DIRECTORY
-      # =========================================================
+      # =====================================================
 
       - name: Prepare Rollback Directory
         shell: powershell
@@ -147,10 +204,12 @@ jobs:
           Write-Host "===== PREPARE ROLLBACK DIRECTORY ====="
 
           if (-not (Test-Path $env:BACKUP_DIR)) {
+
               New-Item `
                 -ItemType Directory `
                 -Path $env:BACKUP_DIR `
                 -Force | Out-Null
+
           }
 
           $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -170,13 +229,13 @@ jobs:
             -Encoding utf8 `
             -Append
 
-          Write-Host "Rollback directory:"
+          Write-Host "Rollback location:"
           Write-Host $backup
 
 
-      # =========================================================
+      # =====================================================
       # 7. BACKUP CURRENT QA WAR
-      # =========================================================
+      # =====================================================
 
       - name: Backup Current QA WAR
         shell: powershell
@@ -185,30 +244,40 @@ jobs:
 
           if (Test-Path $env:IIQ_WAR) {
 
+              $backupWar = Join-Path `
+                $env:CURRENT_BACKUP `
+                "identityiq.war"
+
               Copy-Item `
                 -Path $env:IIQ_WAR `
-                -Destination $env:CURRENT_BACKUP `
+                -Destination $backupWar `
                 -Force
 
-              Write-Host "Current QA WAR backed up."
-              Write-Host $env:CURRENT_BACKUP
+              if (-not (Test-Path $backupWar)) {
+                  throw "Existing QA WAR backup failed."
+              }
+
+              Write-Host "Current QA WAR backed up successfully."
+              Write-Host $backupWar
 
           }
           else {
 
               Write-Host "No existing identityiq.war found."
+              Write-Host "Deployment will continue."
 
           }
 
 
-      # =========================================================
+      # =====================================================
       # 8. STOP TOMCAT
-      # =========================================================
+      # Tested successfully with a 180-second timeout
+      # =====================================================
 
       - name: Stop Tomcat
         shell: powershell
         run: |
-          Write-Host "===== CURRENT TOMCAT STATUS ====="
+          Write-Host "===== TOMCAT CURRENT STATUS ====="
 
           $status = sc.exe query $env:TOMCAT_SERVICE
           $status | Write-Host
@@ -228,11 +297,11 @@ jobs:
                   throw "Unable to send stop command to Tomcat."
               }
 
+              Write-Host "Waiting for Tomcat to stop..."
+
               $timeout = 180
               $elapsed = 0
               $stopped = $false
-
-              Write-Host "Waiting up to 180 seconds..."
 
               while ($elapsed -lt $timeout) {
 
@@ -246,8 +315,8 @@ jobs:
                       $stopped = $true
 
                       Write-Host "Tomcat stopped successfully."
-
                       break
+
                   }
 
                   $elapsed += 5
@@ -260,9 +329,9 @@ jobs:
           }
 
 
-      # =========================================================
+      # =====================================================
       # 9. REMOVE OLD EXPANDED IDENTITYIQ
-      # =========================================================
+      # =====================================================
 
       - name: Remove Existing Expanded IdentityIQ
         shell: powershell
@@ -286,9 +355,9 @@ jobs:
           }
 
 
-      # =========================================================
-      # 10. REMOVE CURRENT WAR
-      # =========================================================
+      # =====================================================
+      # 10. REMOVE OLD WAR
+      # =====================================================
 
       - name: Remove Existing QA WAR
         shell: powershell
@@ -301,26 +370,26 @@ jobs:
                 -Path $env:IIQ_WAR `
                 -Force
 
-              Write-Host "Existing identityiq.war removed."
+              Write-Host "Existing QA WAR removed."
 
           }
           else {
 
-              Write-Host "Existing identityiq.war not present."
+              Write-Host "Existing QA WAR is not present."
 
           }
 
 
-      # =========================================================
-      # 11. DEPLOY NEW WAR
-      # =========================================================
+      # =====================================================
+      # 11. COPY NEW WAR
+      # =====================================================
 
       - name: Deploy New IdentityIQ WAR
         shell: powershell
         run: |
           Write-Host "===== DEPLOY NEW WAR ====="
 
-          Write-Host "Source WAR:"
+          Write-Host "Source:"
           Write-Host $env:WAR_PATH
 
           Write-Host "Destination:"
@@ -332,46 +401,50 @@ jobs:
             -Force
 
           if (-not (Test-Path $env:IIQ_WAR)) {
-              throw "New identityiq.war was not deployed."
+              throw "New IdentityIQ WAR was not deployed."
           }
 
           Write-Host "New IdentityIQ WAR deployed successfully."
 
 
-      # =========================================================
-      # 12. VERIFY DEPLOYED WAR
-      # =========================================================
+      # =====================================================
+      # 12. VERIFY DEPLOYED WAR SHA256
+      # =====================================================
 
       - name: Verify Deployed WAR
         shell: powershell
         run: |
-          Write-Host "===== DEPLOYED WAR ====="
+          Write-Host "===== VERIFY DEPLOYED WAR ====="
 
-          Get-Item $env:IIQ_WAR
-
-          Write-Host "===== DEPLOYED WAR SHA256 ====="
+          if (-not (Test-Path $env:IIQ_WAR)) {
+              throw "Deployed WAR does not exist."
+          }
 
           $deployedHash = Get-FileHash `
             -Path $env:IIQ_WAR `
             -Algorithm SHA256
 
-          $deployedHash | Format-List
+          Write-Host "Source SHA256:"
+          Write-Host $env:SOURCE_WAR_HASH
+
+          Write-Host "Deployed SHA256:"
+          Write-Host $deployedHash.Hash
 
           if ($deployedHash.Hash -ne $env:SOURCE_WAR_HASH) {
-              throw "WAR SHA256 mismatch after deployment."
+              throw "WAR SHA256 verification failed after deployment."
           }
 
-          Write-Host "WAR checksum verification successful."
+          Write-Host "WAR SHA256 verification successful."
 
 
-      # =========================================================
+      # =====================================================
       # 13. START TOMCAT
-      # =========================================================
+      # =====================================================
 
       - name: Start Tomcat
         shell: powershell
         run: |
-          Write-Host "===== CURRENT TOMCAT STATUS ====="
+          Write-Host "===== TOMCAT STATUS BEFORE START ====="
 
           $status = sc.exe query $env:TOMCAT_SERVICE
           $status | Write-Host
@@ -394,9 +467,9 @@ jobs:
           }
 
 
-      # =========================================================
+      # =====================================================
       # 14. WAIT FOR TOMCAT
-      # =========================================================
+      # =====================================================
 
       - name: Wait for Tomcat to Start
         shell: powershell
@@ -419,8 +492,8 @@ jobs:
                   $running = $true
 
                   Write-Host "Tomcat is RUNNING."
-
                   break
+
               }
 
               $elapsed += 5
@@ -431,16 +504,20 @@ jobs:
           }
 
 
-      # =========================================================
-      # 15. FINAL VERIFICATION
-      # =========================================================
+      # =====================================================
+      # 15. FINAL DEPLOYMENT VERIFICATION
+      # =====================================================
 
       - name: Final Deployment Verification
         shell: powershell
         run: |
-          Write-Host "========================================"
-          Write-Host "     IDENTITYIQ QA DEPLOYMENT"
-          Write-Host "========================================"
+          Write-Host "=========================================="
+          Write-Host "       IDENTITYIQ QA DEPLOYMENT"
+          Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "CI Run ID:"
+          Write-Host "${{ inputs.run_id }}"
 
           Write-Host ""
           Write-Host "Tomcat Status:"
@@ -457,7 +534,7 @@ jobs:
             -Algorithm SHA256
 
           Write-Host ""
-          Write-Host "Rollback Backup:"
+          Write-Host "Rollback backup:"
           Write-Host $env:CURRENT_BACKUP
 
           Write-Host ""
