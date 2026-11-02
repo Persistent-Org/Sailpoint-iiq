@@ -1,11 +1,7 @@
 name: Deploy IdentityIQ to QA
 
 on:
-  workflow_run:
-    workflows:
-      - Build and Publish IdentityIQ Artifact
-    types:
-      - completed
+  push:
     branches:
       - feature/iiq85-qa-cd-pipeline
 
@@ -21,39 +17,40 @@ jobs:
   deploy-to-qa:
     name: Deploy IdentityIQ WAR to QA
 
-    # Deploy only when the CI workflow completes successfully.
-    if: github.event.workflow_run.conclusion == 'success'
-
     runs-on:
       - self-hosted
       - Windows
 
     env:
-      TOMCAT_SERVICE: Tomcat9
+      CI_WORKFLOW_NAME: 'Build and Publish IdentityIQ Artifact'
+
+      TOMCAT_SERVICE: 'Tomcat9'
+
       IIQ_WAR: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war'
+
       IIQ_EXPLODED: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq'
+
       DOWNLOAD_DIR: 'C:\actions-runner\_work\_deploy\iiq'
+
       BACKUP_DIR: 'C:\IIQ_Backup'
 
     steps:
 
       # =====================================================
-      # 1. SHOW CI AND RUNNER INFORMATION
+      # 1. SHOW PUSH AND RUNNER INFORMATION
       # =====================================================
 
-      - name: Show CI and Runner Information
+      - name: Show Push and Runner Information
         shell: powershell
         run: |
-          Write-Host "===== CI WORKFLOW INFORMATION ====="
-          Write-Host "CI Workflow: ${{ github.event.workflow_run.name }}"
-          Write-Host "CI Run ID: ${{ github.event.workflow_run.id }}"
-          Write-Host "CI Run Number: ${{ github.event.workflow_run.run_number }}"
-          Write-Host "CI Branch: ${{ github.event.workflow_run.head_branch }}"
-          Write-Host "CI Commit: ${{ github.event.workflow_run.head_sha }}"
-          Write-Host "CI Conclusion: ${{ github.event.workflow_run.conclusion }}"
+          Write-Host "===== PUSH INFORMATION ====="
+          Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "Branch: $env:GITHUB_REF_NAME"
+          Write-Host "Commit: $env:GITHUB_SHA"
+          Write-Host "CD Run ID: $env:GITHUB_RUN_ID"
 
           Write-Host ""
-          Write-Host "===== QA RUNNER IDENTITY ====="
+          Write-Host "===== QA RUNNER ====="
           hostname
           whoami
           whoami /user
@@ -63,12 +60,117 @@ jobs:
           sc.exe query $env:TOMCAT_SERVICE
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Unable to query the Tomcat service."
+              throw "Unable to query Tomcat service."
           }
 
 
       # =====================================================
-      # 2. PREPARE DOWNLOAD DIRECTORY
+      # 2. WAIT FOR CI RUN FOR THIS EXACT COMMIT
+      # =====================================================
+
+      - name: Wait for Successful CI Run
+        id: find-ci
+        uses: actions/github-script@v7
+        env:
+          CI_WORKFLOW_NAME: ${{ env.CI_WORKFLOW_NAME }}
+          TARGET_SHA: ${{ github.sha }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowName = process.env.CI_WORKFLOW_NAME;
+            const targetSha = process.env.TARGET_SHA;
+            const targetBranch = process.env.TARGET_BRANCH;
+
+            const timeoutMinutes = 60;
+            const pollSeconds = 20;
+            const startedAt = Date.now();
+
+            core.info(`Waiting for CI workflow: ${workflowName}`);
+            core.info(`Commit: ${targetSha}`);
+            core.info(`Branch: ${targetBranch}`);
+
+            while ((Date.now() - startedAt) < timeoutMinutes * 60 * 1000) {
+              const response = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: targetBranch,
+                per_page: 100
+              });
+
+              const ciRun = response.data.workflow_runs.find(run =>
+                run.name === workflowName &&
+                run.head_sha === targetSha
+              );
+
+              if (!ciRun) {
+                core.info(
+                  `CI run is not available yet. Checking again in ${pollSeconds} seconds.`
+                );
+
+                await new Promise(resolve =>
+                  setTimeout(resolve, pollSeconds * 1000)
+                );
+
+                continue;
+              }
+
+              core.info(`CI Run ID: ${ciRun.id}`);
+              core.info(`CI status: ${ciRun.status}`);
+              core.info(`CI conclusion: ${ciRun.conclusion}`);
+
+              if (ciRun.status !== "completed") {
+                core.info(
+                  `CI is still running. Checking again in ${pollSeconds} seconds.`
+                );
+
+                await new Promise(resolve =>
+                  setTimeout(resolve, pollSeconds * 1000)
+                );
+
+                continue;
+              }
+
+              if (ciRun.conclusion !== "success") {
+                core.setFailed(
+                  `CI run ${ciRun.id} completed with conclusion: ${ciRun.conclusion}`
+                );
+
+                return;
+              }
+
+              core.setOutput("run_id", ciRun.id.toString());
+              core.info(`Successful CI Run ID: ${ciRun.id}`);
+
+              return;
+            }
+
+            core.setFailed(
+              `CI workflow did not complete successfully within ${timeoutMinutes} minutes.`
+            );
+
+
+      # =====================================================
+      # 3. SHOW SELECTED CI RUN
+      # =====================================================
+
+      - name: Show Selected CI Run
+        shell: powershell
+        env:
+          CI_RUN_ID: ${{ steps.find-ci.outputs.run_id }}
+        run: |
+          Write-Host "===== SELECTED CI RUN ====="
+          Write-Host "CI workflow: $env:CI_WORKFLOW_NAME"
+          Write-Host "CI Run ID: $env:CI_RUN_ID"
+          Write-Host "Commit: $env:GITHUB_SHA"
+
+          if ([string]::IsNullOrWhiteSpace($env:CI_RUN_ID)) {
+              throw "CI Run ID was not found."
+          }
+
+
+      # =====================================================
+      # 4. PREPARE DOWNLOAD DIRECTORY
       # =====================================================
 
       - name: Prepare Download Directory
@@ -97,20 +199,20 @@ jobs:
 
 
       # =====================================================
-      # 3. DOWNLOAD DYNAMIC CI ARTIFACT
+      # 5. DOWNLOAD DYNAMIC IDENTITYIQ ARTIFACT
       # =====================================================
 
       - name: Download CI Artifact
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.find-ci.outputs.run_id }}
           pattern: identityiq-*
           path: ${{ env.DOWNLOAD_DIR }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
 
       # =====================================================
-      # 4. LOCATE THE WAR FILE
+      # 6. LOCATE WAR FILE
       # =====================================================
 
       - name: Locate WAR
@@ -133,13 +235,14 @@ jobs:
           )
 
           if ($warFiles.Count -eq 0) {
-              throw "No WAR file was found in the downloaded identityiq-* artifact."
+              throw "No WAR file was found in the identityiq-* artifact."
           }
 
           if ($warFiles.Count -gt 1) {
               Write-Host "Multiple WAR files were found:"
               $warFiles.FullName | Write-Host
-              throw "Deployment stopped because multiple WAR files were found."
+
+              throw "Multiple WAR files were found. Deployment stopped."
           }
 
           $war = $warFiles[0]
@@ -156,13 +259,13 @@ jobs:
 
           "WAR_PATH=$($war.FullName)" |
             Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
 
       # =====================================================
-      # 5. CALCULATE SOURCE WAR CHECKSUM
+      # 7. CALCULATE SOURCE WAR CHECKSUM
       # =====================================================
 
       - name: Calculate Downloaded WAR SHA256
@@ -186,13 +289,13 @@ jobs:
 
           "SOURCE_WAR_HASH=$($sourceHash.Hash)" |
             Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
 
       # =====================================================
-      # 6. PREPARE ROLLBACK DIRECTORY
+      # 8. PREPARE ROLLBACK DIRECTORY
       # =====================================================
 
       - name: Prepare Rollback Directory
@@ -224,16 +327,16 @@ jobs:
 
           "CURRENT_BACKUP=$backup" |
             Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
           Write-Host "Rollback directory:"
           Write-Host $backup
 
 
       # =====================================================
-      # 7. BACK UP CURRENT QA WAR
+      # 9. BACK UP CURRENT QA WAR
       # =====================================================
 
       - name: Backup Current QA WAR
@@ -268,12 +371,12 @@ jobs:
           }
           else {
               Write-Host "No existing identityiq.war was found."
-              Write-Host "This deployment will continue without an old WAR backup."
+              Write-Host "Deployment will continue."
           }
 
 
       # =====================================================
-      # 8. STOP TOMCAT
+      # 10. STOP TOMCAT
       # =====================================================
 
       - name: Stop Tomcat
@@ -297,7 +400,7 @@ jobs:
               sc.exe stop $env:TOMCAT_SERVICE
 
               if ($LASTEXITCODE -ne 0) {
-                  throw "Unable to send the stop command to Tomcat."
+                  throw "Unable to send stop command to Tomcat."
               }
 
               $timeout = 180
@@ -327,7 +430,7 @@ jobs:
 
 
       # =====================================================
-      # 9. REMOVE OLD EXPANDED IDENTITYIQ
+      # 11. REMOVE EXPANDED IDENTITYIQ DIRECTORY
       # =====================================================
 
       - name: Remove Existing Expanded IdentityIQ
@@ -353,7 +456,7 @@ jobs:
 
 
       # =====================================================
-      # 10. REMOVE OLD QA WAR
+      # 12. REMOVE EXISTING QA WAR
       # =====================================================
 
       - name: Remove Existing QA WAR
@@ -378,7 +481,7 @@ jobs:
 
 
       # =====================================================
-      # 11. DEPLOY NEW WAR
+      # 13. DEPLOY NEW WAR
       # =====================================================
 
       - name: Deploy New IdentityIQ WAR
@@ -386,10 +489,10 @@ jobs:
         run: |
           Write-Host "===== DEPLOY NEW IDENTITYIQ WAR ====="
 
-          Write-Host "Source WAR:"
+          Write-Host "Source:"
           Write-Host $env:WAR_PATH
 
-          Write-Host "Destination WAR:"
+          Write-Host "Destination:"
           Write-Host $env:IIQ_WAR
 
           Copy-Item `
@@ -408,12 +511,12 @@ jobs:
           }
 
           Write-Host "New IdentityIQ WAR deployed successfully."
-          Write-Host "Deployed size:"
+          Write-Host "Deployed WAR size:"
           Write-Host $deployedWar.Length
 
 
       # =====================================================
-      # 12. VERIFY DEPLOYED WAR CHECKSUM
+      # 14. VERIFY DEPLOYED WAR CHECKSUM
       # =====================================================
 
       - name: Verify Deployed WAR SHA256
@@ -432,14 +535,14 @@ jobs:
           Write-Host $deployedHash.Hash
 
           if ($deployedHash.Hash -ne $env:SOURCE_WAR_HASH) {
-              throw "WAR SHA256 verification failed after deployment."
+              throw "WAR SHA256 verification failed."
           }
 
           Write-Host "WAR SHA256 verification successful."
 
 
       # =====================================================
-      # 13. START TOMCAT
+      # 15. START TOMCAT
       # =====================================================
 
       - name: Start Tomcat
@@ -469,7 +572,7 @@ jobs:
 
 
       # =====================================================
-      # 14. WAIT FOR TOMCAT TO START
+      # 16. WAIT FOR TOMCAT TO START
       # =====================================================
 
       - name: Wait for Tomcat to Start
@@ -480,8 +583,6 @@ jobs:
           $timeout = 180
           $elapsed = 0
           $running = $false
-
-          Write-Host "Waiting up to 180 seconds for Tomcat to start."
 
           while ($elapsed -lt $timeout) {
               Start-Sleep -Seconds 5
@@ -503,19 +604,15 @@ jobs:
 
 
       # =====================================================
-      # 15. WAIT FOR IDENTITYIQ WAR EXPANSION
+      # 17. WAIT FOR IDENTITYIQ WAR EXPANSION
       # =====================================================
 
-      - name: Wait for IdentityIQ Deployment
-        shell: powershell
-        run: |
+      - name: Wait for IdentityIQ Deployment  run: |
           Write-Host "===== WAIT FOR IDENTITYIQ EXPANSION ====="
 
           $timeout = 300
           $elapsed = 0
           $expanded = $false
-
-          Write-Host "Waiting up to 300 seconds for Tomcat to expand identityiq.war."
 
           while ($elapsed -lt $timeout) {
               if (Test-Path $env:IIQ_EXPLODED) {
@@ -529,16 +626,18 @@ jobs:
           }
 
           if (-not $expanded) {
-              throw "IdentityIQ expanded directory was not created within 300 seconds."
+              throw "IdentityIQ directory was not expanded within 300 seconds."
           }
 
 
       # =====================================================
-      # 16. FINAL DEPLOYMENT VERIFICATION
+      # 18. FINAL DEPLOYMENT VERIFICATION
       # =====================================================
 
       - name: Final Deployment Verification
         shell: powershell
+        env:
+          CI_RUN_ID: ${{ steps.find-ci.outputs.run_id }}
         run: |
           Write-Host "=========================================="
           Write-Host "       IDENTITYIQ QA DEPLOYMENT"
@@ -546,15 +645,15 @@ jobs:
 
           Write-Host ""
           Write-Host "CI Workflow:"
-          Write-Host "${{ github.event.workflow_run.name }}"
+          Write-Host $env:CI_WORKFLOW_NAME
 
           Write-Host ""
           Write-Host "CI Run ID:"
-          Write-Host "${{ github.event.workflow_run.id }}"
+          Write-Host $env:CI_RUN_ID
 
           Write-Host ""
-          Write-Host "CI Commit:"
-          Write-Host "${{ github.event.workflow_run.head_sha }}"
+          Write-Host "Commit:"
+          Write-Host $env:GITHUB_SHA
 
           Write-Host ""
           Write-Host "Tomcat Status:"
