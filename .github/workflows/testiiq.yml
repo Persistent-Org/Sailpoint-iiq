@@ -1,0 +1,33 @@
+name: Test IIQ Access
+ 
+on:
+  workflow_dispatch:
+ 
+jobs:
+  test-iiq:
+ 
+    runs-on:
+      - self-hosted
+      - Windows
+ 
+    steps:
+ 
+      - name: Show Host
+        run: |
+          hostname
+          whoami
+ 
+      - name: Check IdentityIQ Bin Folder
+        shell: cmd
+        run: |
+          dir "C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin"
+ 
+      - name: Locate IIQ Command
+        shell: cmd
+        run: |
+          where iiq
+ 
+      - name: Check IIQ Console
+        shell: cmd
+        run: |
+          echo exit | iiq console
