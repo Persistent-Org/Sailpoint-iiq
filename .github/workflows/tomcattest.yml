@@ -1,0 +1,68 @@
+name: Test Tomcat Control
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - "feature/iiq85-qa-cd-pipeline"
+
+jobs:
+  test-tomcat:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    steps:
+
+      - name: Verify Runner Account
+        shell: powershell
+        run: |
+          Write-Host "Runner account:"
+          whoami
+
+      - name: Check Initial Tomcat Status
+        shell: powershell
+        run: |
+          Write-Host "Current Tomcat status:"
+          Get-Service Tomcat9
+
+      - name: Stop Tomcat
+        shell: powershell
+        run: |
+          Write-Host "Stopping Tomcat..."
+
+          Stop-Service `
+            -Name "Tomcat9" `
+            -ErrorAction Stop
+
+          Start-Sleep -Seconds 5
+
+          $service = Get-Service Tomcat9
+
+          Write-Host "Tomcat status after stop:"
+          Write-Host $service.Status
+
+          if ($service.Status -ne "Stopped") {
+            throw "Tomcat did not stop successfully"
+          }
+
+      - name: Start Tomcat
+        shell: powershell
+        run: |
+          Write-Host "Starting Tomcat..."
+
+          Start-Service `
+            -Name "Tomcat9" `
+            -ErrorAction Stop
+
+          Start-Sleep -Seconds 10
+
+          $service = Get-Service Tomcat9
+
+          Write-Host "Tomcat status after start:"
+          Write-Host $service.Status
+
+          if ($service.Status -ne "Running") {
+            throw "Tomcat did not start
