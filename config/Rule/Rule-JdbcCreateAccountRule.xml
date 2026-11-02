@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="JDBC Create Account Rule" type="JDBCOperationProvisioning">
+  <Description>This rule is used by the JDBC connector to do provisioning of the data .</Description>
+  <Signature returnType="ProvisioningResult">
+    <Inputs>
+      <Argument name="log" type="org.apache.commons.logging.Log">
+        <Description>
+          The log object associated with the SailPointContext.
+        </Description>
+      </Argument>
+      <Argument name="context" type="sailpoint.api.SailPointContext">
+        <Description>
+          A sailpoint.api.SailPointContext object that can be used to query the database if necessary.
+        </Description>
+      </Argument>
+      <Argument name="application">
+        <Description>The application whose data file is being processed.</Description>
+      </Argument>
+      <Argument name="schema">
+        <Description>The Schema currently in use.</Description>
+      </Argument>
+      <Argument name="connection">
+        <Description>A connection object to connect to database.</Description>
+      </Argument>
+      <Argument name="plan">
+        <Description>The ProvisioningPlan created against the JDBC application.</Description>
+      </Argument>
+      <Argument name="request">
+        <Description>The ProvisioningRequest created against the JDBC application.</Description>
+      </Argument>
+    </Inputs>
+    <Returns>
+      <Argument name="result">
+        <Description>A Provisioning Result object is desirable to return the status.IT can be a new object or part of  Provisioning Plan</Description>
+      </Argument>
+    </Returns>
+  </Signature>
+  <Source><![CDATA[import java.sql.Connection;
+  import java.sql.PreparedStatement;
+
+  import sailpoint.object.ProvisioningPlan;
+  import sailpoint.object.ProvisioningResult;
+  import sailpoint.object.ProvisioningPlan.AccountRequest;
+  import sailpoint.object.ProvisioningPlan.AttributeRequest;
+  import sailpoint.tools.Util;
+
+  ProvisioningResult result = new ProvisioningResult();
+
+  try {
+
+    log.error("plan in create account rule :"+plan.toXml());
+    AccountRequest acctReq = plan.getAccountRequests().get(0);
+
+    String empid = acctReq.getNativeIdentity();
+    String firstname = (String) acctReq.getAttributeRequest("firstname").getValue();
+    String lastname = (String) acctReq.getAttributeRequest("lastname").getValue();
+    String status = (String) acctReq.getAttributeRequest("status").getValue();
+
+    String groupNames = null;
+
+    AttributeRequest groupAttr = acctReq.getAttributeRequest("group_names");
+
+    if (groupAttr != null) {
+      Object value = groupAttr.getValue();
+
+      if (value instanceof java.util.List) {
+        groupNames = Util.listToCsv((java.util.List) value);
+      } else if (value != null) {
+        groupNames = value.toString();
+      }
+    }
+
+    PreparedStatement ps = connection.prepareStatement(
+      "INSERT INTO employee (empid, firstname, lastname, status, group_names) VALUES (?, ?, ?, ?, ?)"
+    );
+
+    ps.setString(1, empid);
+    ps.setString(2, firstname);
+    ps.setString(3, lastname);
+    ps.setString(4, status);
+    ps.setString(5, groupNames);
+
+    ps.executeUpdate();
+    ps.close();
+
+    result.setStatus(ProvisioningResult.STATUS_COMMITTED);
+
+  } catch (Exception e) {
+
+    log.error("Create Account Failed", e);
+
+    result.setStatus(ProvisioningResult.STATUS_FAILED);
+    result.addError(e);
+
+  }
+
+  return result;]]></Source>
+</Rule>

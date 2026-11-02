@@ -1,0 +1,123 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="JDBC Modify Rule" type="JDBCOperationProvisioning">
+  <Description>This rule is used by the JDBC connector to do provisioning of the data .</Description>
+  <Signature returnType="ProvisioningResult">
+    <Inputs>
+      <Argument name="log" type="org.apache.commons.logging.Log">
+        <Description>
+          The log object associated with the SailPointContext.
+        </Description>
+      </Argument>
+      <Argument name="context" type="sailpoint.api.SailPointContext">
+        <Description>
+          A sailpoint.api.SailPointContext object that can be used to query the database if necessary.
+        </Description>
+      </Argument>
+      <Argument name="application">
+        <Description>The application whose data file is being processed.</Description>
+      </Argument>
+      <Argument name="schema">
+        <Description>The Schema currently in use.</Description>
+      </Argument>
+      <Argument name="connection">
+        <Description>A connection object to connect to database.</Description>
+      </Argument>
+      <Argument name="plan">
+        <Description>The ProvisioningPlan created against the JDBC application.</Description>
+      </Argument>
+      <Argument name="request">
+        <Description>The ProvisioningRequest created against the JDBC application.</Description>
+      </Argument>
+    </Inputs>
+    <Returns>
+      <Argument name="result">
+        <Description>A Provisioning Result object is desirable to return the status.IT can be a new object or part of  Provisioning Plan</Description>
+      </Argument>
+    </Returns>
+  </Signature>
+  <Source><![CDATA[import java.util.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Arrays;
+
+import sailpoint.object.Application;
+import sailpoint.object.ProvisioningPlan;
+import sailpoint.object.ProvisioningPlan.AccountRequest;
+import sailpoint.object.ProvisioningPlan.AttributeRequest;
+import sailpoint.object.ProvisioningResult;
+
+ProvisioningResult result = new ProvisioningResult();
+		List accountRequests= plan.getAccountRequests();
+		System.out.println(accountRequests);
+	AccountRequest accountRequest = (AccountRequest) accountRequests.get(0);
+String nativeIdentity = accountRequest.getNativeIdentity();
+		System.out.println(nativeIdentity);
+List attributeRequests = accountRequest.getAttributeRequests();
+List valuesList = new ArrayList();
+String op = null;
+for (AttributeRequest ar : attributeRequests) {
+    op = ar.getOperation().toString();
+    Object valueObj = ar.getValue();
+    //  Multiple entitlements (List)
+    if (valueObj instanceof List) {
+        for (Object val : (List) valueObj) {
+            valuesList.add(val.toString());
+        }
+    }
+    // Single entitlement
+    else if (valueObj != null) {
+        valuesList.add(valueObj.toString());
+    }
+}
+		System.out.println(valuesList);
+PreparedStatement ps = connection.prepareStatement("SELECT * FROM employee where empid= ?");
+ps.setString(1,nativeIdentity);
+ResultSet rs= ps.executeQuery();
+String entitlement = "";
+while(rs.next()) {
+		entitlement= rs.getString("groups");
+	}
+// add operation ....................................	
+if(op.equalsIgnoreCase("Add")) {
+String value = String.join(",", valuesList);
+String concat= entitlement+ ","+ value;
+PreparedStatement ps1= connection.prepareStatement("update employee set `groups`=? where empid=?");
+		ps1.setString(1, concat);
+		ps1.setString(2, nativeIdentity);
+int n= ps1.executeUpdate();
+if(n>0) {
+			System.out.println("success");
+			result.setStatus(ProvisioningResult.STATUS_COMMITTED);
+		}
+		else {
+			System.out.println("failed");
+			result.setStatus(ProvisioningResult.STATUS_FAILED);
+		}
+	}
+
+// remove operation....................................
+if(op.equalsIgnoreCase("Remove")) {
+System.out.println("remove process started");
+List list1 = new ArrayList( Arrays.asList(entitlement.split(",")));
+list1.removeAll(valuesList);
+String updatedEntitlement = String.join(",", list1);
+PreparedStatement  ps2= connection.prepareStatement("update employee set `groups`=? where empid=?");
+		ps2.setString(1,updatedEntitlement);
+		ps2.setString(2,nativeIdentity);
+		int n= ps2.executeUpdate();
+		if(n>0) {
+			System.out.println("success");
+			result.setStatus(ProvisioningResult.STATUS_COMMITTED);
+		}
+		else {
+			System.out.println("failed");
+			result.setStatus(ProvisioningResult.STATUS_FAILED);
+		}
+ 
+	}
+return result;]]></Source>
+</Rule>
