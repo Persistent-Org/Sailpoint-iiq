@@ -1,4 +1,4 @@
-name: CD - Deploy SailPoint IIQ to QA
+name: CD - Deploy SailPoint IIQ to QAs
 
 on:
   workflow_dispatch:
