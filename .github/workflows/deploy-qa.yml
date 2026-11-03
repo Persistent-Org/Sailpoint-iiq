@@ -34,7 +34,7 @@ jobs:
     steps:
 
       # =====================================================
-      # 1. SHOW RUNNER AND SERVER INFORMATION
+      # 1. SHOW RUNNER AND SERVER INFORMATIONs
       # =====================================================
 
       - name: Show Runner Information
