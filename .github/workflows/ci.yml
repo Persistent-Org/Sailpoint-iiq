@@ -36,7 +36,7 @@ env:
 jobs:
 
   # =========================================================
-  # JOB 1 - VALIDATION
+  # JOB 1 - VALIDATIONs
   # =========================================================
   validate:
     name: Validate SailPoint Changes
