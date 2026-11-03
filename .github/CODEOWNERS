@@ -1,0 +1,15 @@
+# =========================================================
+# SailPoint IdentityIQ POC - CODEOWNERS
+# =========================================================
+
+# Default repository changes require SDM review
+* @SDM-GITHUB-USERNAME
+
+# SailPoint source changes require SDM review
+/src/ @SDM-GITHUB-USERNAME
+
+# SailPoint configuration changes require SDM review
+/config/ @SDM-GITHUB-USERNAME
+
+# CI/CD workflow changes require SDM review
+/.github/workflows/ @SDM-GITHUB-USERNAME
