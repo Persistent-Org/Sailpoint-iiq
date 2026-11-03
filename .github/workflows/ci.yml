@@ -39,7 +39,7 @@ env:
 jobs:
 
   # =========================================================
-  # JOB 1 - VALIDATIONS
+  # JOB 1 - VALIDATIONS for SSB structure
   # =========================================================
   validate:
     name: Validate SailPoint Changes
