@@ -3,7 +3,7 @@ name: Deploy IdentityIQ to QA
 on:
   push:
     branches:
-      - feature/iiq85-qa-cd-pipeline
+      - feature/iiq85-ci-cd-pipeline 
 
 permissions:
   actions: read
