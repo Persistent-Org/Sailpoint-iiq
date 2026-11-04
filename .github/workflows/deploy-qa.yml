@@ -1,17 +1,11 @@
 name: Deploy IdentityIQ to QA
 
 on:
-  # Start CD when the full CI workflow completes on develop.
-  workflow_run:
-    workflows:
-      - "CI - Build & Validate (SailPoint IIQ)"
-    types:
-      - completed
+  # CD starts when an approved PR is merged into develop.
+  # CI also starts from the same develop push.
+  push:
     branches:
       - develop
-
-  # Retained for controlled POC/manual testing.
-  workflow_dispatch:
 
 permissions:
   actions: read
@@ -25,12 +19,6 @@ jobs:
 
   deploy-to-qa:
     name: Deploy IdentityIQ WAR to QA
-
-    # Automatic deployment requires successful CI.
-    # Manual workflow_dispatch remains available for POC testing.
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
 
     runs-on:
       - self-hosted
@@ -49,13 +37,15 @@ jobs:
     steps:
 
       # =====================================================
-      # 1. SHOW RUNNER / DEPLOYMENT INFORMATION
+      # 1. SHOW RUNNER AND DEPLOYMENT INFORMATION
       # =====================================================
       - name: Show Runner Information
         shell: powershell
         run: |
           Write-Host "===== DEPLOYMENT INFORMATION ====="
           Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "Branch: $env:GITHUB_REF_NAME"
+          Write-Host "Commit: $env:GITHUB_SHA"
           Write-Host "CD Run ID: $env:GITHUB_RUN_ID"
 
           Write-Host ""
@@ -74,55 +64,101 @@ jobs:
 
 
       # =====================================================
-      # 2. GET SUCCESSFUL CI RUN
+      # 2. WAIT FOR CI RUN FOR SAME COMMIT
       # =====================================================
-      - name: Get Successful CI Run
+      - name: Wait for Successful CI Run
         id: find-ci
-        shell: powershell
-        run: |
-          Write-Host "===== CI RUN INFORMATION ====="
+        uses: actions/github-script@v7
+        env:
+          CI_WORKFLOW_NAME: ${{ env.CI_WORKFLOW_NAME }}
+          TARGET_SHA: ${{ github.sha }}
+          TARGET_BRANCH: ${{ github.ref_name }}
 
-          if ("${{ github.event_name }}" -eq "workflow_run") {
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-              $ciRunId = "${{ github.event.workflow_run.id }}"
-              $ciSha = "${{ github.event.workflow_run.head_sha }}"
-              $ciBranch = "${{ github.event.workflow_run.head_branch }}"
-              $ciConclusion = "${{ github.event.workflow_run.conclusion }}"
+          script: |
+            const workflowName = process.env.CI_WORKFLOW_NAME;
+            const targetSha = process.env.TARGET_SHA;
+            const targetBranch = process.env.TARGET_BRANCH;
 
-              Write-Host "CI Run ID: $ciRunId"
-              Write-Host "CI Commit: $ciSha"
-              Write-Host "CI Branch: $ciBranch"
-              Write-Host "CI Conclusion: $ciConclusion"
+            const timeoutMinutes = 60;
+            const pollSeconds = 20;
+            const startTime = Date.now();
 
-              if ($ciConclusion -ne "success") {
-                  throw "CI workflow did not complete successfully."
+            core.info(`CI workflow: ${workflowName}`);
+            core.info(`Target branch: ${targetBranch}`);
+            core.info(`Target commit: ${targetSha}`);
+
+            while (
+              Date.now() - startTime <
+              timeoutMinutes * 60 * 1000
+            ) {
+
+              const response =
+                await github.rest.actions.listWorkflowRunsForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  branch: targetBranch,
+                  per_page: 100
+                });
+
+              const ciRun =
+                response.data.workflow_runs.find(run =>
+                  run.name === workflowName &&
+                  run.head_sha === targetSha
+                );
+
+              if (!ciRun) {
+                core.info(
+                  `CI run not found yet. Waiting ${pollSeconds} seconds.`
+                );
+
+                await new Promise(resolve =>
+                  setTimeout(resolve, pollSeconds * 1000)
+                );
+
+                continue;
               }
 
-              if ($ciBranch -ne "develop") {
-                  throw "CI workflow did not run from develop."
+              core.info(`CI Run ID: ${ciRun.id}`);
+              core.info(`CI status: ${ciRun.status}`);
+              core.info(`CI conclusion: ${ciRun.conclusion}`);
+
+              if (ciRun.status !== "completed") {
+                core.info(
+                  `CI is still running. Waiting ${pollSeconds} seconds.`
+                );
+
+                await new Promise(resolve =>
+                  setTimeout(resolve, pollSeconds * 1000)
+                );
+
+                continue;
               }
 
-              "CI_RUN_ID=$ciRunId" |
-                Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              if (ciRun.conclusion !== "success") {
+                core.setFailed(
+                  `CI Run ${ciRun.id} completed with conclusion: ${ciRun.conclusion}`
+                );
+                return;
+              }
 
-              "CI_COMMIT_SHA=$ciSha" |
-                Out-File `
-                  -FilePath $env:GITHUB_ENV `
-                  -Encoding utf8 `
-                  -Append
+              core.setOutput(
+                "run_id",
+                ciRun.id.toString()
+              );
 
-              "run_id=$ciRunId" |
-                Out-File `
-                  -FilePath $env:GITHUB_OUTPUT `
-                  -Encoding utf8 `
-                  -Append
-          }
-          else {
-              throw "Manual CD requires CI Run selection logic before deployment."
-          }
+              core.info(
+                `Successful CI Run ID selected: ${ciRun.id}`
+              );
+
+              return;
+            }
+
+            core.setFailed(
+              `CI did not complete successfully within ${timeoutMinutes} minutes.`
+            );
 
 
       # =====================================================
@@ -130,18 +166,17 @@ jobs:
       # =====================================================
       - name: Validate Selected CI Run
         shell: powershell
+        env:
+          CI_RUN_ID: ${{ steps.find-ci.outputs.run_id }}
+
         run: |
           Write-Host "===== SELECTED CI RUN ====="
           Write-Host "CI Workflow: $env:CI_WORKFLOW_NAME"
           Write-Host "CI Run ID: $env:CI_RUN_ID"
-          Write-Host "CI Commit: $env:CI_COMMIT_SHA"
+          Write-Host "Commit: $env:GITHUB_SHA"
 
           if (-not $env:CI_RUN_ID) {
               throw "CI Run ID was not found."
-          }
-
-          if (-not $env:CI_COMMIT_SHA) {
-              throw "CI commit SHA was not found."
           }
 
 
@@ -175,7 +210,7 @@ jobs:
 
 
       # =====================================================
-      # 5. DOWNLOAD ARTIFACT FROM EXACT CI RUN
+      # 5. DOWNLOAD ARTIFACT FROM SUCCESSFUL CI RUN
       # =====================================================
       - name: Download CI Artifact
         uses: actions/download-artifact@v4
@@ -313,7 +348,7 @@ jobs:
 
 
       # =====================================================
-      # 9. BACKUP CURRENT QA WAR
+      # 9. BACKUP EXISTING QA WAR
       # =====================================================
       - name: Backup Current QA WAR
         shell: powershell
@@ -369,6 +404,7 @@ jobs:
               Write-Host "Tomcat is already STOPPED."
           }
           else {
+
               Write-Host "===== STOPPING TOMCAT ====="
 
               sc.exe stop $env:TOMCAT_SERVICE
@@ -385,6 +421,7 @@ jobs:
               $stopped = $false
 
               while ($elapsed -lt $timeout) {
+
                   Start-Sleep -Seconds 5
                   $elapsed += 5
 
@@ -405,7 +442,7 @@ jobs:
 
 
       # =====================================================
-      # 11. REMOVE OLD EXPANDED IDENTITYIQ
+      # 11. REMOVE EXISTING EXPANDED IDENTITYIQ
       # =====================================================
       - name: Remove Existing Expanded IdentityIQ
         shell: powershell
@@ -413,6 +450,7 @@ jobs:
           Write-Host "===== REMOVE EXPANDED IDENTITYIQ ====="
 
           if (Test-Path $env:IIQ_EXPLODED) {
+
               Remove-Item `
                 -Path $env:IIQ_EXPLODED `
                 -Recurse `
@@ -438,6 +476,7 @@ jobs:
           Write-Host "===== REMOVE EXISTING QA WAR ====="
 
           if (Test-Path $env:IIQ_WAR) {
+
               Remove-Item `
                 -Path $env:IIQ_WAR `
                 -Force
@@ -483,6 +522,7 @@ jobs:
           }
 
           Write-Host "WAR deployed successfully."
+
           Write-Host "Deployed WAR size:"
           Write-Host $deployedWar.Length
 
@@ -531,6 +571,7 @@ jobs:
               Write-Host "Tomcat is already RUNNING."
           }
           else {
+
               Write-Host "===== STARTING TOMCAT ====="
 
               sc.exe start $env:TOMCAT_SERVICE
@@ -542,7 +583,7 @@ jobs:
 
 
       # =====================================================
-      # 16. WAIT FOR TOMCAT
+      # 16. WAIT FOR TOMCAT TO START
       # =====================================================
       - name: Wait for Tomcat to Start
         shell: powershell
@@ -554,6 +595,7 @@ jobs:
           $running = $false
 
           while ($elapsed -lt $timeout) {
+
               Start-Sleep -Seconds 5
               $elapsed += 5
 
@@ -573,7 +615,7 @@ jobs:
 
 
       # =====================================================
-      # 17. WAIT FOR IDENTITYIQ
+      # 17. WAIT FOR IDENTITYIQ TO EXPAND
       # =====================================================
       - name: Wait for IdentityIQ Deployment
         shell: powershell
@@ -587,6 +629,7 @@ jobs:
           while ($elapsed -lt $timeout) {
 
               if (Test-Path $env:IIQ_EXPLODED) {
+
                   $expanded = $true
                   Write-Host "IdentityIQ expanded directory exists."
                   break
@@ -606,10 +649,21 @@ jobs:
       # =====================================================
       - name: Final Deployment Verification
         shell: powershell
+        env:
+          CI_RUN_ID: ${{ steps.find-ci.outputs.run_id }}
+
         run: |
           Write-Host "======================================"
           Write-Host "    IDENTITYIQ QA DEPLOYMENT"
           Write-Host "======================================"
+
+          Write-Host ""
+          Write-Host "Branch:"
+          Write-Host $env:GITHUB_REF_NAME
+
+          Write-Host ""
+          Write-Host "Commit:"
+          Write-Host $env:GITHUB_SHA
 
           Write-Host ""
           Write-Host "CI Workflow:"
@@ -618,10 +672,6 @@ jobs:
           Write-Host ""
           Write-Host "CI Run ID:"
           Write-Host $env:CI_RUN_ID
-
-          Write-Host ""
-          Write-Host "CI Commit:"
-          Write-Host $env:CI_COMMIT_SHA
 
           Write-Host ""
           Write-Host "Tomcat Status:"
