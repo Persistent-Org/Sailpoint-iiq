@@ -1,21 +1,13 @@
 name: CI - Build & Validate (SailPoint IIQ)
 
 on:
+  # Full CI runs only after an approved PR is merged to develop.
+  # The merge creates a push on develop.
   push:
     branches:
       - develop
-      - "feature/**"
-      - "bugfix/**"
 
-  pull_request:
-    branches:
-      - develop
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-
+  # Manual execution retained for POC/testing.
   workflow_dispatch:
 
 concurrency:
@@ -184,7 +176,6 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ant unzip
-
           ant -version
 
       - name: Verify SSB Ant Configuration
@@ -193,7 +184,7 @@ jobs:
           ant -p
 
       # -------------------------------------------------------
-      # Download IdentityIQ 8.5 package from Azure Blob
+      # Download IdentityIQ 8.5 package
       # -------------------------------------------------------
       - name: Download IdentityIQ 8.5 Base Package
         shell: bash
@@ -260,9 +251,7 @@ jobs:
           echo "IdentityIQ versions match"
 
       # -------------------------------------------------------
-      # SSB build / compilation
-      # Unit tests are not included in current POC.
-      # SPTARGET=test selects test-specific SSB configuration.
+      # SSB build validation
       # -------------------------------------------------------
       - name: Compile and Validate SSB
         shell: bash
@@ -276,14 +265,8 @@ jobs:
 
       # -------------------------------------------------------
       # Dependency vulnerability scan intentionally deferred.
-      #
-      # Existing ant dependency-check fails while retrieving
-      # NVD vulnerability data.
-      #
-      # To be addressed separately after confirmation from
-      # SailPoint/Security team.
+      # Unit tests are not included in current POC.
       # -------------------------------------------------------
-
       - name: Build Validation Summary
         shell: bash
         run: |
@@ -320,12 +303,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ant unzip
-
           ant -version
 
       # -------------------------------------------------------
-      # Every GitHub Actions job gets a clean runner.
-      # Download IIQ package again before WAR generation.
+      # Fresh runner requires IIQ package again
       # -------------------------------------------------------
       - name: Download IdentityIQ 8.5 Base Package
         shell: bash
@@ -358,7 +339,7 @@ jobs:
           ls -lh "$IIQ_PACKAGE_PATH"
 
       # -------------------------------------------------------
-      # Generate WAR using test SSB target
+      # Generate WAR
       # -------------------------------------------------------
       - name: Build IdentityIQ WAR
         shell: bash
@@ -405,7 +386,7 @@ jobs:
           cat "${ARTIFACT_NAME}.war.sha256"
 
       # -------------------------------------------------------
-      # Publish WAR artifact
+      # Publish WAR
       # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
         uses: actions/upload-artifact@v4
