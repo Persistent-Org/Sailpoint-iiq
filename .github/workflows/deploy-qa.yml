@@ -1,397 +1,654 @@
-name: CI - Build & Validate (SailPoint IIQ)
+name: Deploy IdentityIQ to QA
 
 on:
-  # Full CI runs only after an approved PR is merged to develop.
-  # The merge creates a push on develop.
-  push:
+  # Start CD when the full CI workflow completes on develop.
+  workflow_run:
+    workflows:
+      - "CI - Build & Validate (SailPoint IIQ)"
+    types:
+      - completed
     branches:
       - develop
 
-  # Manual execution retained for POC/testing.
+  # Retained for controlled POC/manual testing.
   workflow_dispatch:
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
+  actions: read
   contents: read
 
-env:
-  JAVA_VERSION: "17"
-  CONFIG_DIR: "config"
-
-  # SSB target configuration
-  SPTARGET: "test"
-
-  IIQ_VERSION: "8.5"
-  IIQ_PACKAGE_PATH: "base/ga/identityiq-8.5.zip"
-  WAR_PATH: "build/deploy/identityiq.war"
+concurrency:
+  group: identityiq-qa-deployment
+  cancel-in-progress: false
 
 jobs:
 
-  # =========================================================
-  # JOB 1 - VALIDATIONS
-  # =========================================================
-  validate:
-    name: Validate SailPoint Changes
-    runs-on: ubuntu-latest
+  deploy-to-qa:
+    name: Deploy IdentityIQ WAR to QA
+
+    # Automatic deployment requires successful CI.
+    # Manual workflow_dispatch remains available for POC testing.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    runs-on:
+      - self-hosted
+      - Windows
+
+    timeout-minutes: 90
+
+    env:
+      CI_WORKFLOW_NAME: 'CI - Build & Validate (SailPoint IIQ)'
+      TOMCAT_SERVICE: 'Tomcat9'
+      IIQ_WAR: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war'
+      IIQ_EXPLODED: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq'
+      DOWNLOAD_DIR: 'C:\actions-runner\_work\_deploy\iiq'
+      BACKUP_DIR: 'C:\IIQ_Backup'
 
     steps:
 
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Validate SSB Structure
-        shell: bash
+      # =====================================================
+      # 1. SHOW RUNNER / DEPLOYMENT INFORMATION
+      # =====================================================
+      - name: Show Runner Information
+        shell: powershell
         run: |
-          echo "Validating SailPoint SSB structure..."
+          Write-Host "===== DEPLOYMENT INFORMATION ====="
+          Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "CD Run ID: $env:GITHUB_RUN_ID"
 
-          status=0
+          Write-Host ""
+          Write-Host "===== RUNNER IDENTITY ====="
+          hostname
+          whoami
+          whoami /user
 
-          required_files=(
-            "build.xml"
-            "build.properties"
-            "scripts/build.filelayout.xml"
-            "scripts/build.java.xml"
+          Write-Host ""
+          Write-Host "===== TOMCAT STATUS ====="
+          sc.exe query $env:TOMCAT_SERVICE
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to query the Tomcat service."
+          }
+
+
+      # =====================================================
+      # 2. GET SUCCESSFUL CI RUN
+      # =====================================================
+      - name: Get Successful CI Run
+        id: find-ci
+        shell: powershell
+        run: |
+          Write-Host "===== CI RUN INFORMATION ====="
+
+          if ("${{ github.event_name }}" -eq "workflow_run") {
+
+              $ciRunId = "${{ github.event.workflow_run.id }}"
+              $ciSha = "${{ github.event.workflow_run.head_sha }}"
+              $ciBranch = "${{ github.event.workflow_run.head_branch }}"
+              $ciConclusion = "${{ github.event.workflow_run.conclusion }}"
+
+              Write-Host "CI Run ID: $ciRunId"
+              Write-Host "CI Commit: $ciSha"
+              Write-Host "CI Branch: $ciBranch"
+              Write-Host "CI Conclusion: $ciConclusion"
+
+              if ($ciConclusion -ne "success") {
+                  throw "CI workflow did not complete successfully."
+              }
+
+              if ($ciBranch -ne "develop") {
+                  throw "CI workflow did not run from develop."
+              }
+
+              "CI_RUN_ID=$ciRunId" |
+                Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+              "CI_COMMIT_SHA=$ciSha" |
+                Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Encoding utf8 `
+                  -Append
+
+              "run_id=$ciRunId" |
+                Out-File `
+                  -FilePath $env:GITHUB_OUTPUT `
+                  -Encoding utf8 `
+                  -Append
+          }
+          else {
+              throw "Manual CD requires CI Run selection logic before deployment."
+          }
+
+
+      # =====================================================
+      # 3. VALIDATE SELECTED CI RUN
+      # =====================================================
+      - name: Validate Selected CI Run
+        shell: powershell
+        run: |
+          Write-Host "===== SELECTED CI RUN ====="
+          Write-Host "CI Workflow: $env:CI_WORKFLOW_NAME"
+          Write-Host "CI Run ID: $env:CI_RUN_ID"
+          Write-Host "CI Commit: $env:CI_COMMIT_SHA"
+
+          if (-not $env:CI_RUN_ID) {
+              throw "CI Run ID was not found."
+          }
+
+          if (-not $env:CI_COMMIT_SHA) {
+              throw "CI commit SHA was not found."
+          }
+
+
+      # =====================================================
+      # 4. PREPARE DOWNLOAD DIRECTORY
+      # =====================================================
+      - name: Prepare Download Directory
+        shell: powershell
+        run: |
+          Write-Host "===== PREPARE DOWNLOAD DIRECTORY ====="
+
+          if (Test-Path $env:DOWNLOAD_DIR) {
+              Remove-Item `
+                -Path $env:DOWNLOAD_DIR `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $env:DOWNLOAD_DIR `
+            -Force |
+            Out-Null
+
+          if (-not (Test-Path $env:DOWNLOAD_DIR)) {
+              throw "Download directory could not be created."
+          }
+
+          Write-Host "Download directory:"
+          Write-Host $env:DOWNLOAD_DIR
+
+
+      # =====================================================
+      # 5. DOWNLOAD ARTIFACT FROM EXACT CI RUN
+      # =====================================================
+      - name: Download CI Artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.find-ci.outputs.run_id }}
+          pattern: identityiq-*
+          path: ${{ env.DOWNLOAD_DIR }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+
+      # =====================================================
+      # 6. LOCATE WAR
+      # =====================================================
+      - name: Locate WAR
+        shell: powershell
+        run: |
+          Write-Host "===== DOWNLOADED FILES ====="
+
+          Get-ChildItem `
+            -Path $env:DOWNLOAD_DIR `
+            -Recurse |
+            Select-Object FullName, Length, LastWriteTime |
+            Format-Table -AutoSize
+
+          $warFiles = @(
+              Get-ChildItem `
+                -Path $env:DOWNLOAD_DIR `
+                -Recurse `
+                -Filter "*.war" `
+                -File
           )
 
-          required_dirs=(
-            "base"
-            "config"
-            "scripts"
-            "src"
-            "lib"
-          )
+          if ($warFiles.Count -eq 0) {
+              throw "No WAR file found in the identityiq-* artifact."
+          }
 
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "::error::$file is missing"
-              status=1
-            else
-              echo "PASS: $file"
-            fi
-          done
+          if ($warFiles.Count -gt 1) {
+              Write-Host "Multiple WAR files found:"
 
-          for dir in "${required_dirs[@]}"; do
-            if [ ! -d "$dir" ]; then
-              echo "::error::$dir directory is missing"
-              status=1
-            else
-              echo "PASS: $dir"
-            fi
-          done
+              $warFiles |
+                Select-Object FullName, Length |
+                Format-Table -AutoSize
 
-          exit "$status"
+              throw "Multiple WAR files found. Deployment stopped."
+          }
 
-      # -------------------------------------------------------
-      # XML lint
-      # -------------------------------------------------------
-      - name: Install XML Lint
-        shell: bash
+          $war = $warFiles[0]
+
+          if ($war.Length -le 0) {
+              throw "Downloaded WAR is empty."
+          }
+
+          Write-Host "WAR path:"
+          Write-Host $war.FullName
+
+          Write-Host "WAR size:"
+          Write-Host $war.Length
+
+          "WAR_PATH=$($war.FullName)" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+
+      # =====================================================
+      # 7. CALCULATE SOURCE WAR SHA256
+      # =====================================================
+      - name: Calculate Downloaded WAR SHA256
+        shell: powershell
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libxml2-utils
-          xmllint --version
+          Write-Host "===== SOURCE WAR SHA256 ====="
 
-      - name: Validate IIQ XML Files
-        shell: bash
+          if (-not (Test-Path $env:WAR_PATH)) {
+              throw "Downloaded WAR does not exist."
+          }
+
+          $sourceHash = Get-FileHash `
+            -Path $env:WAR_PATH `
+            -Algorithm SHA256
+
+          Write-Host "Source WAR:"
+          Write-Host $sourceHash.Path
+
+          Write-Host "Source SHA256:"
+          Write-Host $sourceHash.Hash
+
+          "SOURCE_WAR_HASH=$($sourceHash.Hash)" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+
+      # =====================================================
+      # 8. PREPARE ROLLBACK DIRECTORY
+      # =====================================================
+      - name: Prepare Rollback Directory
+        shell: powershell
         run: |
-          echo "Validating SailPoint XML files..."
+          Write-Host "===== PREPARE ROLLBACK DIRECTORY ====="
 
-          status=0
-          count=0
+          if (-not (Test-Path $env:BACKUP_DIR)) {
+              New-Item `
+                -ItemType Directory `
+                -Path $env:BACKUP_DIR `
+                -Force |
+                Out-Null
+          }
 
-          if [ ! -d "$CONFIG_DIR" ]; then
-            echo "::error::$CONFIG_DIR directory not found"
-            exit 1
-          fi
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
-          while IFS= read -r -d '' file; do
-            count=$((count + 1))
+          $backup = Join-Path `
+            -Path $env:BACKUP_DIR `
+            -ChildPath "deployment-$timestamp"
 
-            echo "Checking: $file"
+          New-Item `
+            -ItemType Directory `
+            -Path $backup `
+            -Force |
+            Out-Null
 
-            if ! xmllint --noout "$file" 2>/tmp/xml_error; then
-              echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
-              status=1
-            else
-              echo "PASS: $file"
-            fi
+          if (-not (Test-Path $backup)) {
+              throw "Rollback directory could not be created."
+          }
 
-          done < <(
-            find "$CONFIG_DIR" \
-              -type f \
-              -name "*.xml" \
-              -print0
-          )
+          "CURRENT_BACKUP=$backup" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
-          echo "Checked $count XML files"
-
-          exit "$status"
-
-      # -------------------------------------------------------
-      # Secret scanning
-      # -------------------------------------------------------
-      - name: Scan Repository for Secrets
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          Write-Host "Rollback directory:"
+          Write-Host $backup
 
 
-  # =========================================================
-  # JOB 2 - BUILD VALIDATION
-  # =========================================================
-  build:
-    name: Build Validation
-    needs: validate
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # -------------------------------------------------------
-      # OpenJDK 17
-      # -------------------------------------------------------
-      - name: Setup OpenJDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Verify Java
-        shell: bash
+      # =====================================================
+      # 9. BACKUP CURRENT QA WAR
+      # =====================================================
+      - name: Backup Current QA WAR
+        shell: powershell
         run: |
-          java -version
+          Write-Host "===== BACKUP CURRENT QA WAR ====="
 
-      # -------------------------------------------------------
-      # Apache Ant
-      # -------------------------------------------------------
-      - name: Install Apache Ant
-        shell: bash
+          if (Test-Path $env:IIQ_WAR) {
+
+              $backupWar = Join-Path `
+                -Path $env:CURRENT_BACKUP `
+                -ChildPath "identityiq.war"
+
+              Copy-Item `
+                -Path $env:IIQ_WAR `
+                -Destination $backupWar `
+                -Force
+
+              if (-not (Test-Path $backupWar)) {
+                  throw "Existing QA WAR backup failed."
+              }
+
+              Write-Host "Current QA WAR backed up:"
+              Write-Host $backupWar
+
+              Write-Host "Backup SHA256:"
+
+              Get-FileHash `
+                -Path $backupWar `
+                -Algorithm SHA256
+          }
+          else {
+              Write-Host "No existing identityiq.war found."
+              Write-Host "Deployment will continue."
+          }
+
+
+      # =====================================================
+      # 10. STOP TOMCAT
+      # =====================================================
+      - name: Stop Tomcat
+        shell: powershell
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ant unzip
-          ant -version
+          Write-Host "===== TOMCAT STATUS BEFORE STOP ====="
 
-      - name: Verify SSB Ant Configuration
-        shell: bash
+          $status = sc.exe query $env:TOMCAT_SERVICE
+          $status | Write-Host
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to query Tomcat."
+          }
+
+          if ($status -match "STOPPED") {
+              Write-Host "Tomcat is already STOPPED."
+          }
+          else {
+              Write-Host "===== STOPPING TOMCAT ====="
+
+              sc.exe stop $env:TOMCAT_SERVICE
+
+              if (
+                  $LASTEXITCODE -ne 0 -and
+                  $LASTEXITCODE -ne 1062
+              ) {
+                  throw "Unable to send the stop command to Tomcat."
+              }
+
+              $timeout = 180
+              $elapsed = 0
+              $stopped = $false
+
+              while ($elapsed -lt $timeout) {
+                  Start-Sleep -Seconds 5
+                  $elapsed += 5
+
+                  $output = sc.exe query $env:TOMCAT_SERVICE
+                  $output | Write-Host
+
+                  if ($output -match "STOPPED") {
+                      $stopped = $true
+                      Write-Host "Tomcat stopped successfully."
+                      break
+                  }
+              }
+
+              if (-not $stopped) {
+                  throw "Tomcat did not stop within 180 seconds."
+              }
+          }
+
+
+      # =====================================================
+      # 11. REMOVE OLD EXPANDED IDENTITYIQ
+      # =====================================================
+      - name: Remove Existing Expanded IdentityIQ
+        shell: powershell
         run: |
-          ant -p
+          Write-Host "===== REMOVE EXPANDED IDENTITYIQ ====="
 
-      # -------------------------------------------------------
-      # Download IdentityIQ 8.5 package
-      # -------------------------------------------------------
-      - name: Download IdentityIQ 8.5 Base Package
-        shell: bash
-        env:
-          IIQ_BLOB_SAS_URL: ${{ secrets.IIQ_BLOB_SAS_URL }}
+          if (Test-Path $env:IIQ_EXPLODED) {
+              Remove-Item `
+                -Path $env:IIQ_EXPLODED `
+                -Recurse `
+                -Force
+
+              if (Test-Path $env:IIQ_EXPLODED) {
+                  throw "Expanded IdentityIQ directory could not be removed."
+              }
+
+              Write-Host "Expanded IdentityIQ directory removed."
+          }
+          else {
+              Write-Host "Expanded IdentityIQ directory does not exist."
+          }
+
+
+      # =====================================================
+      # 12. REMOVE OLD QA WAR
+      # =====================================================
+      - name: Remove Existing QA WAR
+        shell: powershell
         run: |
-          if [ -z "$IIQ_BLOB_SAS_URL" ]; then
-            echo "::error::IIQ_BLOB_SAS_URL secret is not configured"
-            exit 1
-          fi
+          Write-Host "===== REMOVE EXISTING QA WAR ====="
 
-          mkdir -p base/ga
+          if (Test-Path $env:IIQ_WAR) {
+              Remove-Item `
+                -Path $env:IIQ_WAR `
+                -Force
 
-          echo "Downloading IdentityIQ $IIQ_VERSION..."
+              if (Test-Path $env:IIQ_WAR) {
+                  throw "Existing QA WAR could not be removed."
+              }
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 5 \
-            --output "$IIQ_PACKAGE_PATH" \
-            "$IIQ_BLOB_SAS_URL"
+              Write-Host "Existing QA WAR removed."
+          }
+          else {
+              Write-Host "Existing QA WAR is not present."
+          }
 
-          if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
-            echo "::error::IdentityIQ package download failed"
-            exit 1
-          fi
 
-          echo "IdentityIQ package downloaded successfully"
-          ls -lh "$IIQ_PACKAGE_PATH"
-
-      # -------------------------------------------------------
-      # Validate ZIP
-      # -------------------------------------------------------
-      - name: Validate IdentityIQ Package
-        shell: bash
+      # =====================================================
+      # 13. DEPLOY NEW WAR
+      # =====================================================
+      - name: Deploy New IdentityIQ WAR
+        shell: powershell
         run: |
-          echo "Validating IdentityIQ package..."
+          Write-Host "===== DEPLOY NEW WAR ====="
 
-          unzip -t "$IIQ_PACKAGE_PATH" > /tmp/iiq-zip-check.txt
+          Write-Host "Source:"
+          Write-Host $env:WAR_PATH
 
-          tail -n 5 /tmp/iiq-zip-check.txt
+          Write-Host "Destination:"
+          Write-Host $env:IIQ_WAR
 
-          echo "IdentityIQ package validation passed"
+          Copy-Item `
+            -Path $env:WAR_PATH `
+            -Destination $env:IIQ_WAR `
+            -Force
 
-      # -------------------------------------------------------
-      # Verify IIQ version
-      # -------------------------------------------------------
-      - name: Verify IdentityIQ Version
-        shell: bash
+          if (-not (Test-Path $env:IIQ_WAR)) {
+              throw "New IdentityIQ WAR was not deployed."
+          }
+
+          $deployedWar = Get-Item $env:IIQ_WAR
+
+          if ($deployedWar.Length -le 0) {
+              throw "Deployed WAR is empty."
+          }
+
+          Write-Host "WAR deployed successfully."
+          Write-Host "Deployed WAR size:"
+          Write-Host $deployedWar.Length
+
+
+      # =====================================================
+      # 14. VERIFY DEPLOYED WAR SHA256
+      # =====================================================
+      - name: Verify Deployed WAR SHA256
+        shell: powershell
         run: |
-          BUILD_VERSION=$(grep '^IIQVersion=' build.properties \
-            | cut -d '=' -f2 \
-            | tr -d '\r[:space:]')
+          Write-Host "===== VERIFY DEPLOYED WAR ====="
 
-          echo "Pipeline IIQ version: $IIQ_VERSION"
-          echo "build.properties IIQ version: $BUILD_VERSION"
+          $deployedHash = Get-FileHash `
+            -Path $env:IIQ_WAR `
+            -Algorithm SHA256
 
-          if [ "$BUILD_VERSION" != "$IIQ_VERSION" ]; then
-            echo "::error::IdentityIQ version mismatch"
-            exit 1
-          fi
+          Write-Host "Source SHA256:"
+          Write-Host $env:SOURCE_WAR_HASH
 
-          echo "IdentityIQ versions match"
+          Write-Host "Deployed SHA256:"
+          Write-Host $deployedHash.Hash
 
-      # -------------------------------------------------------
-      # SSB build validation
-      # -------------------------------------------------------
-      - name: Compile and Validate SSB
-        shell: bash
+          if ($deployedHash.Hash -ne $env:SOURCE_WAR_HASH) {
+              throw "WAR SHA256 verification failed."
+          }
+
+          Write-Host "WAR SHA256 verification successful."
+
+
+      # =====================================================
+      # 15. START TOMCAT
+      # =====================================================
+      - name: Start Tomcat
+        shell: powershell
         run: |
-          export SPTARGET="$SPTARGET"
+          Write-Host "===== TOMCAT STATUS BEFORE START ====="
 
-          echo "SPTARGET=$SPTARGET"
-          echo "Running SailPoint SSB build..."
+          $status = sc.exe query $env:TOMCAT_SERVICE
+          $status | Write-Host
 
-          ant main
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to query Tomcat."
+          }
 
-      # -------------------------------------------------------
-      # Dependency vulnerability scan intentionally deferred.
-      # Unit tests are not included in current POC.
-      # -------------------------------------------------------
-      - name: Build Validation Summary
-        shell: bash
+          if ($status -match "RUNNING") {
+              Write-Host "Tomcat is already RUNNING."
+          }
+          else {
+              Write-Host "===== STARTING TOMCAT ====="
+
+              sc.exe start $env:TOMCAT_SERVICE
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Unable to start Tomcat."
+              }
+          }
+
+
+      # =====================================================
+      # 16. WAIT FOR TOMCAT
+      # =====================================================
+      - name: Wait for Tomcat to Start
+        shell: powershell
         run: |
-          echo "SSB build completed successfully."
-          echo "SPTARGET used: $SPTARGET"
-          echo "Dependency vulnerability scanning is deferred for the current POC."
+          Write-Host "===== WAIT FOR TOMCAT ====="
+
+          $timeout = 180
+          $elapsed = 0
+          $running = $false
+
+          while ($elapsed -lt $timeout) {
+              Start-Sleep -Seconds 5
+              $elapsed += 5
+
+              $output = sc.exe query $env:TOMCAT_SERVICE
+              $output | Write-Host
+
+              if ($output -match "RUNNING") {
+                  $running = $true
+                  Write-Host "Tomcat is RUNNING."
+                  break
+              }
+          }
+
+          if (-not $running) {
+              throw "Tomcat did not reach RUNNING state within 180 seconds."
+          }
 
 
-  # =========================================================
-  # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
-  # =========================================================
-  artifact:
-    name: Build and Publish IdentityIQ Artifact
-
-    needs:
-      - validate
-      - build
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup OpenJDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Install Apache Ant
-        shell: bash
+      # =====================================================
+      # 17. WAIT FOR IDENTITYIQ
+      # =====================================================
+      - name: Wait for IdentityIQ Deployment
+        shell: powershell
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ant unzip
-          ant -version
+          Write-Host "===== WAIT FOR IDENTITYIQ EXPANSION ====="
 
-      # -------------------------------------------------------
-      # Fresh runner requires IIQ package again
-      # -------------------------------------------------------
-      - name: Download IdentityIQ 8.5 Base Package
-        shell: bash
-        env:
-          IIQ_BLOB_SAS_URL: ${{ secrets.IIQ_BLOB_SAS_URL }}
+          $timeout = 300
+          $elapsed = 0
+          $expanded = $false
+
+          while ($elapsed -lt $timeout) {
+
+              if (Test-Path $env:IIQ_EXPLODED) {
+                  $expanded = $true
+                  Write-Host "IdentityIQ expanded directory exists."
+                  break
+              }
+
+              Start-Sleep -Seconds 10
+              $elapsed += 10
+          }
+
+          if (-not $expanded) {
+              throw "IdentityIQ was not expanded within 300 seconds."
+          }
+
+
+      # =====================================================
+      # 18. FINAL DEPLOYMENT VERIFICATION
+      # =====================================================
+      - name: Final Deployment Verification
+        shell: powershell
         run: |
-          if [ -z "$IIQ_BLOB_SAS_URL" ]; then
-            echo "::error::IIQ_BLOB_SAS_URL secret is not configured"
-            exit 1
-          fi
+          Write-Host "======================================"
+          Write-Host "    IDENTITYIQ QA DEPLOYMENT"
+          Write-Host "======================================"
 
-          mkdir -p base/ga
+          Write-Host ""
+          Write-Host "CI Workflow:"
+          Write-Host $env:CI_WORKFLOW_NAME
 
-          echo "Downloading IdentityIQ $IIQ_VERSION..."
+          Write-Host ""
+          Write-Host "CI Run ID:"
+          Write-Host $env:CI_RUN_ID
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 5 \
-            --output "$IIQ_PACKAGE_PATH" \
-            "$IIQ_BLOB_SAS_URL"
+          Write-Host ""
+          Write-Host "CI Commit:"
+          Write-Host $env:CI_COMMIT_SHA
 
-          if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
-            echo "::error::IdentityIQ package download failed"
-            exit 1
-          fi
+          Write-Host ""
+          Write-Host "Tomcat Status:"
+          sc.exe query $env:TOMCAT_SERVICE
 
-          echo "IdentityIQ package downloaded successfully"
-          ls -lh "$IIQ_PACKAGE_PATH"
+          Write-Host ""
+          Write-Host "Deployed WAR:"
 
-      # -------------------------------------------------------
-      # Generate WAR
-      # -------------------------------------------------------
-      - name: Build IdentityIQ WAR
-        shell: bash
-        run: |
-          export SPTARGET="$SPTARGET"
+          Get-Item $env:IIQ_WAR |
+            Format-List FullName, Length, LastWriteTime
 
-          echo "SPTARGET=$SPTARGET"
-          echo "Building IdentityIQ WAR..."
+          Write-Host ""
+          Write-Host "Deployed WAR SHA256:"
 
-          ant war
+          Get-FileHash `
+            -Path $env:IIQ_WAR `
+            -Algorithm SHA256
 
-      # -------------------------------------------------------
-      # Verify and version WAR
-      # -------------------------------------------------------
-      - name: Version Deployment Artifact
-        id: artifact
-        shell: bash
-        run: |
-          if [ ! -f "$WAR_PATH" ]; then
-            echo "::error::WAR not found at $WAR_PATH"
-            exit 1
-          fi
+          Write-Host ""
+          Write-Host "IdentityIQ expanded directory:"
 
-          SHORT_SHA="${GITHUB_SHA::7}"
+          Get-Item $env:IIQ_EXPLODED |
+            Format-List FullName, LastWriteTime
 
-          ARTIFACT_NAME="identityiq-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+          Write-Host ""
+          Write-Host "Rollback directory:"
+          Write-Host $env:CURRENT_BACKUP
 
-          mkdir -p dist
-
-          cp "$WAR_PATH" \
-            "dist/${ARTIFACT_NAME}.war"
-
-          cd dist
-
-          sha256sum "${ARTIFACT_NAME}.war" \
-            > "${ARTIFACT_NAME}.war.sha256"
-
-          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
-
-          echo "Artifact created:"
-          echo "${ARTIFACT_NAME}.war"
-
-          echo "Checksum:"
-          cat "${ARTIFACT_NAME}.war.sha256"
-
-      # -------------------------------------------------------
-      # Publish WAR
-      # -------------------------------------------------------
-      - name: Publish IdentityIQ Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.artifact.outputs.artifact_name }}
-          path: dist/*
-          retention-days: 30
-          if-no-files-found: error
+          Write-Host ""
+          Write-Host "QA deployment completed successfully."
