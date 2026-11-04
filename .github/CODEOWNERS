@@ -1,0 +1,21 @@
+# Default Code Owner / SDM Approver
+* @Mandeep-Kaur-Johar
+
+# SailPoint configuration
+/config/ @Mandeep-Kaur-Johar
+
+# SailPoint source code
+/src/ @Mandeep-Kaur-Johar
+
+# Build configuration
+/build.xml @Mandeep-Kaur-Johar
+/build.properties @Mandeep-Kaur-Johar
+
+# SSB build scripts
+/scripts/ @Mandeep-Kaur-Johar
+
+# CI/CD workflows
+/.github/workflows/ @Mandeep-Kaur-Johar
+
+# CODEOWNERS file
+/.github/CODEOWNERS @Mandeep-Kaur-Johar
