@@ -1,15 +1,21 @@
-# =========================================================
-# SailPoint IdentityIQ POC - CODEOWNERS
-# =========================================================
+# Default Code Owner / SDM Approver
+* @Mandeep-Kaur-Johar
 
-# Default repository changes require SDM review
-* @SDM-GITHUB-USERNAME
+# SailPoint configuration
+/config/ @Mandeep-Kaur-Johar
 
-# SailPoint source changes require SDM review
-/src/ @SDM-GITHUB-USERNAME
+# Source code
+/src/ @Mandeep-Kaur-Johar
 
-# SailPoint configuration changes require SDM review
-/config/ @SDM-GITHUB-USERNAME
+# Build configuration
+/build.xml @Mandeep-Kaur-Johar
+/build.properties @Mandeep-Kaur-Johar
 
-# CI/CD workflow changes require SDM review
-/.github/workflows/ @SDM-GITHUB-USERNAME
+# Build scripts
+/scripts/ @Mandeep-Kaur-Johar
+
+# CI/CD workflows
+/.github/workflows/ @Mandeep-Kaur-Johar
+
+# CODEOWNERS changes
+/.github/CODEOWNERS @Mandeep-Kaur-Johar
