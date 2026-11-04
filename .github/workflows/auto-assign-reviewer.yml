@@ -1,0 +1,62 @@
+name: Auto Assign PR Reviewer
+
+on:
+  pull_request:
+    branches:
+      - develop
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  assign-reviewer:
+    name: Assign SDM Reviewer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Assign SDM as PR Reviewer
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const reviewer = "Mandeep-Kaur-Johar";
+            const developer = "nikkgg";
+
+            const author = context.payload.pull_request.user.login;
+            const pullNumber = context.payload.pull_request.number;
+
+            core.info(`PR Number: ${pullNumber}`);
+            core.info(`PR Author: ${author}`);
+
+            // Do not assign the reviewer to their own PR
+            if (author === reviewer) {
+              core.notice(
+                `${reviewer} created the PR. Reviewer assignment skipped.`
+              );
+              return;
+            }
+
+            // Optional POC control:
+            // Only automatically assign the SDM for the developer's PRs
+            if (author !== developer) {
+              core.notice(
+                `PR was created by ${author}, not ${developer}. Reviewer assignment skipped.`
+              );
+              return;
+            }
+
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+              reviewers: [reviewer]
+            });
+
+            core.info(
+              `Review requested from ${reviewer} for PR #${pullNumber}.`
+            );
