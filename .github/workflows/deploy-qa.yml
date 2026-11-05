@@ -1,8 +1,6 @@
 name: Deploy IdentityIQ to QA
 
 on:
-  # CD begins when changes are merged or pushed to develop.
-  # CI also starts from the same develop push.
   push:
     branches:
       - develop
@@ -16,7 +14,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-
   deploy-to-qa:
     name: Deploy IdentityIQ WAR to QA
 
@@ -117,7 +114,7 @@ jobs:
 
               if (!ciRun) {
                 core.info(
-                  `CI run not found yet. Waiting ${pollSeconds} seconds.`
+                  `CI run not found. Waiting ${pollSeconds} seconds.`
                 );
 
                 await new Promise(resolve =>
@@ -354,7 +351,7 @@ jobs:
 
 
       # =====================================================
-      # 9. BACKUP EXISTING QA WAR
+      # 9. BACKUP CURRENT QA WAR
       # =====================================================
       - name: Backup Current QA WAR
         shell: powershell
@@ -386,7 +383,6 @@ jobs:
           }
           else {
               Write-Host "No existing identityiq.war found."
-              Write-Host "Deployment will continue."
           }
 
 
@@ -399,23 +395,28 @@ jobs:
           Write-Host "===== TOMCAT STATUS BEFORE STOP ====="
 
           $status = sc.exe query $env:TOMCAT_SERVICE
+          $queryExitCode = $LASTEXITCODE
+
           $status | Write-Host
 
-          if ($LASTEXITCODE -ne 0) {
+          if ($queryExitCode -ne 0) {
               throw "Unable to query Tomcat."
           }
 
-          if ($status -match "STOPPED") {
+          $statusText = $status -join "`n"
+
+          if ($statusText -match "STATE\s*:\s*1\s+STOPPED") {
               Write-Host "Tomcat is already STOPPED."
           }
           else {
               Write-Host "===== STOPPING TOMCAT ====="
 
               sc.exe stop $env:TOMCAT_SERVICE
+              $stopExitCode = $LASTEXITCODE
 
               if (
-                  $LASTEXITCODE -ne 0 -and
-                  $LASTEXITCODE -ne 1062
+                  $stopExitCode -ne 0 -and
+                  $stopExitCode -ne 1062
               ) {
                   throw "Unable to send the stop command to Tomcat."
               }
@@ -431,7 +432,9 @@ jobs:
                   $output = sc.exe query $env:TOMCAT_SERVICE
                   $output | Write-Host
 
-                  if ($output -match "STOPPED") {
+                  $outputText = $output -join "`n"
+
+                  if ($outputText -match "STATE\s*:\s*1\s+STOPPED") {
                       $stopped = $true
                       Write-Host "Tomcat stopped successfully."
                       break
@@ -523,9 +526,7 @@ jobs:
           }
 
           Write-Host "WAR deployed successfully."
-
-          Write-Host "Deployed WAR size:"
-          Write-Host $deployedWar.Length
+          Write-Host "Deployed WAR size: $($deployedWar.Length)"
 
 
       # =====================================================
@@ -562,21 +563,26 @@ jobs:
           Write-Host "===== TOMCAT STATUS BEFORE START ====="
 
           $status = sc.exe query $env:TOMCAT_SERVICE
+          $queryExitCode = $LASTEXITCODE
+
           $status | Write-Host
 
-          if ($LASTEXITCODE -ne 0) {
+          if ($queryExitCode -ne 0) {
               throw "Unable to query Tomcat."
           }
 
-          if ($status -match "RUNNING") {
+          $statusText = $status -join "`n"
+
+          if ($statusText -match "STATE\s*:\s*4\s+RUNNING") {
               Write-Host "Tomcat is already RUNNING."
           }
           else {
               Write-Host "===== STARTING TOMCAT ====="
 
               sc.exe start $env:TOMCAT_SERVICE
+              $startExitCode = $LASTEXITCODE
 
-              if ($LASTEXITCODE -ne 0) {
+              if ($startExitCode -ne 0) {
                   throw "Unable to start Tomcat."
               }
           }
@@ -599,9 +605,17 @@ jobs:
               $elapsed += 5
 
               $output = sc.exe query $env:TOMCAT_SERVICE
+              $queryExitCode = $LASTEXITCODE
+
               $output | Write-Host
 
-              if ($output -match "RUNNING") {
+              if ($queryExitCode -ne 0) {
+                  throw "Unable to query Tomcat while waiting for startup."
+              }
+
+              $outputText = $output -join "`n"
+
+              if ($outputText -match "STATE\s*:\s*4\s+RUNNING") {
                   $running = $true
                   Write-Host "Tomcat is RUNNING."
                   break
@@ -675,8 +689,6 @@ jobs:
                   $launcherExists
               ) {
                   $ready = $true
-
-                  Write-Host ""
                   Write-Host "IdentityIQ deployment is fully expanded."
                   break
               }
@@ -696,7 +708,9 @@ jobs:
                     -Filter "sp.init-custom.xml" `
                     -ErrorAction SilentlyContinue |
                     Select-Object FullName
+              }
 
+              if (Test-Path $env:IIQ_BIN) {
                   Get-ChildItem `
                     -Path $env:IIQ_BIN `
                     -Filter "iiq*" `
@@ -707,7 +721,6 @@ jobs:
               throw "IdentityIQ did not fully deploy within 300 seconds."
           }
 
-          Write-Host ""
           Write-Host "IdentityIQ deployment validation successful."
 
 
@@ -735,7 +748,7 @@ jobs:
           Write-Host $env:IIQ_BIN
 
           Write-Host ""
-          Write-Host "IdentityIQ console launcher:"
+          Write-Host "IdentityIQ launcher:"
           Write-Host $env:IIQ_LAUNCHER
 
           Write-Host ""
@@ -743,7 +756,7 @@ jobs:
           Write-Host $env:IIQ_IMPORT_FILE
 
           Write-Host ""
-          Write-Host "IIQ console and import-file validation successful."
+          Write-Host "IIQ console validation successful."
 
 
       # =====================================================
@@ -766,7 +779,8 @@ jobs:
             -Path $env:RUNNER_TEMP `
             -ChildPath "run-iiq-import-$env:GITHUB_RUN_ID.cmd"
 
-          $importCommand = 'import "' + $env:IIQ_IMPORT_FILE + '"'
+          $importCommand =
+              'import "' + $env:IIQ_IMPORT_FILE + '"'
 
           @(
               $importCommand
@@ -821,11 +835,7 @@ jobs:
           Write-Host $wrapperFile
 
           Write-Host ""
-          Write-Host "IIQ import log:"
-          Write-Host $logFile
-
-          Write-Host ""
-          Write-Host "Commands that will be sent to IIQ console:"
+          Write-Host "Commands sent to IIQ console:"
 
           Get-Content $commandFile
 
@@ -856,10 +866,6 @@ jobs:
 
           Write-Host "Working directory:"
           Write-Host $env:IIQ_BIN
-
-          Write-Host ""
-          Write-Host "IIQ launcher:"
-          Write-Host $env:IIQ_LAUNCHER
 
           Write-Host ""
           Write-Host "Import file:"
@@ -965,13 +971,14 @@ jobs:
               (Test-Path $env:IIQ_IMPORT_LOG)
           ) {
               Write-Host ""
-              Write-Host "IIQ import log retained until workflow completion:"
+              Write-Host "IIQ import log:"
               Write-Host $env:IIQ_IMPORT_LOG
           }
 
 
       # =====================================================
       # 22. FINAL DEPLOYMENT VERIFICATION
+      # Corrected multiline Tomcat status check
       # =====================================================
       - name: Final Deployment Verification
         shell: powershell
@@ -1003,14 +1010,31 @@ jobs:
           Write-Host "Tomcat Status:"
 
           $tomcatStatus = sc.exe query $env:TOMCAT_SERVICE
+          $tomcatExitCode = $LASTEXITCODE
+
           $tomcatStatus | Write-Host
 
-          if ($LASTEXITCODE -ne 0) {
+          if ($tomcatExitCode -ne 0) {
               throw "Unable to query Tomcat during final verification."
           }
 
-          if ($tomcatStatus -notmatch "RUNNING") {
+          # sc.exe returns an array of output lines.
+          # Join all lines before testing the service state.
+          $tomcatStatusText =
+              $tomcatStatus -join "`n"
+
+          if (
+              $tomcatStatusText -notmatch
+              "STATE\s*:\s*4\s+RUNNING"
+          ) {
               throw "Tomcat is not RUNNING after deployment."
+          }
+
+          Write-Host ""
+          Write-Host "Tomcat final status verified: RUNNING."
+
+          if (-not (Test-Path $env:IIQ_WAR -PathType Leaf)) {
+              throw "Deployed IdentityIQ WAR does not exist."
           }
 
           Write-Host ""
@@ -1022,9 +1046,26 @@ jobs:
           Write-Host ""
           Write-Host "Deployed WAR SHA256:"
 
-          Get-FileHash `
+          $finalWarHash = Get-FileHash `
             -Path $env:IIQ_WAR `
             -Algorithm SHA256
+
+          $finalWarHash |
+            Format-List Path, Algorithm, Hash
+
+          if ($finalWarHash.Hash -ne $env:SOURCE_WAR_HASH) {
+              throw "Final deployed WAR SHA256 does not match the source WAR."
+          }
+
+          if (
+              -not (
+                  Test-Path `
+                    $env:IIQ_EXPLODED `
+                    -PathType Container
+              )
+          ) {
+              throw "IdentityIQ expanded directory does not exist."
+          }
 
           Write-Host ""
           Write-Host "IdentityIQ expanded directory:"
@@ -1032,9 +1073,17 @@ jobs:
           Get-Item $env:IIQ_EXPLODED |
             Format-List FullName, LastWriteTime
 
+          if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
+              throw "IIQ launcher is missing after deployment."
+          }
+
           Write-Host ""
           Write-Host "IIQ console launcher:"
           Write-Host $env:IIQ_LAUNCHER
+
+          if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
+              throw "IIQ configuration file is missing after deployment."
+          }
 
           Write-Host ""
           Write-Host "IIQ configuration file:"
