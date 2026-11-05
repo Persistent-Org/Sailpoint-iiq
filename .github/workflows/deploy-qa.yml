@@ -29,8 +29,12 @@ jobs:
     env:
       CI_WORKFLOW_NAME: 'CI - Build & Validate (SailPoint IIQ)'
       TOMCAT_SERVICE: 'Tomcat9'
+
       IIQ_WAR: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war'
       IIQ_EXPLODED: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq'
+      IIQ_BIN: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin'
+      IIQ_IMPORT_FILE: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\config\sp.init-custom.xml'
+
       DOWNLOAD_DIR: 'C:\actions-runner\_work\_deploy\iiq'
       BACKUP_DIR: 'C:\IIQ_Backup'
 
@@ -50,12 +54,14 @@ jobs:
 
           Write-Host ""
           Write-Host "===== RUNNER IDENTITY ====="
+
           hostname
           whoami
           whoami /user
 
           Write-Host ""
           Write-Host "===== TOMCAT STATUS ====="
+
           sc.exe query $env:TOMCAT_SERVICE
 
           if ($LASTEXITCODE -ne 0) {
@@ -94,7 +100,6 @@ jobs:
               Date.now() - startTime <
               timeoutMinutes * 60 * 1000
             ) {
-
               const response =
                 await github.rest.actions.listWorkflowRunsForRepo({
                   owner: context.repo.owner,
@@ -356,7 +361,6 @@ jobs:
           Write-Host "===== BACKUP CURRENT QA WAR ====="
 
           if (Test-Path $env:IIQ_WAR) {
-
               $backupWar = Join-Path `
                 -Path $env:CURRENT_BACKUP `
                 -ChildPath "identityiq.war"
@@ -404,7 +408,6 @@ jobs:
               Write-Host "Tomcat is already STOPPED."
           }
           else {
-
               Write-Host "===== STOPPING TOMCAT ====="
 
               sc.exe stop $env:TOMCAT_SERVICE
@@ -421,7 +424,6 @@ jobs:
               $stopped = $false
 
               while ($elapsed -lt $timeout) {
-
                   Start-Sleep -Seconds 5
                   $elapsed += 5
 
@@ -450,7 +452,6 @@ jobs:
           Write-Host "===== REMOVE EXPANDED IDENTITYIQ ====="
 
           if (Test-Path $env:IIQ_EXPLODED) {
-
               Remove-Item `
                 -Path $env:IIQ_EXPLODED `
                 -Recurse `
@@ -476,7 +477,6 @@ jobs:
           Write-Host "===== REMOVE EXISTING QA WAR ====="
 
           if (Test-Path $env:IIQ_WAR) {
-
               Remove-Item `
                 -Path $env:IIQ_WAR `
                 -Force
@@ -571,7 +571,6 @@ jobs:
               Write-Host "Tomcat is already RUNNING."
           }
           else {
-
               Write-Host "===== STARTING TOMCAT ====="
 
               sc.exe start $env:TOMCAT_SERVICE
@@ -595,7 +594,6 @@ jobs:
           $running = $false
 
           while ($elapsed -lt $timeout) {
-
               Start-Sleep -Seconds 5
               $elapsed += 5
 
@@ -627,11 +625,13 @@ jobs:
           $expanded = $false
 
           while ($elapsed -lt $timeout) {
-
-              if (Test-Path $env:IIQ_EXPLODED) {
-
+              if (
+                  (Test-Path $env:IIQ_EXPLODED -PathType Container) -and
+                  (Test-Path $env:IIQ_BIN -PathType Container)
+              ) {
                   $expanded = $true
                   Write-Host "IdentityIQ expanded directory exists."
+                  Write-Host "IdentityIQ bin directory exists."
                   break
               }
 
@@ -640,12 +640,297 @@ jobs:
           }
 
           if (-not $expanded) {
-              throw "IdentityIQ was not expanded within 300 seconds."
+              throw "IdentityIQ was not fully expanded within 300 seconds."
           }
 
 
       # =====================================================
-      # 18. FINAL DEPLOYMENT VERIFICATION
+      # 18. VALIDATE IIQ CONSOLE AND IMPORT FILE
+      # =====================================================
+      - name: Validate IIQ Console and Import File
+        shell: powershell
+        run: |
+          Write-Host "===== VALIDATE IIQ CONSOLE ====="
+
+          if (-not (Test-Path $env:IIQ_BIN -PathType Container)) {
+              throw "IdentityIQ bin directory does not exist: $env:IIQ_BIN"
+          }
+
+          $resolvedImportFile = $env:IIQ_IMPORT_FILE
+
+          if (-not (Test-Path $resolvedImportFile -PathType Leaf)) {
+              Write-Host "Configured import file was not found:"
+              Write-Host $resolvedImportFile
+
+              Write-Host ""
+              Write-Host "Searching the deployed IdentityIQ directory..."
+
+              $matches = @(
+                  Get-ChildItem `
+                    -Path $env:IIQ_EXPLODED `
+                    -Recurse `
+                    -Filter "sp.init-custom.xml" `
+                    -File `
+                    -ErrorAction SilentlyContinue
+              )
+
+              if ($matches.Count -eq 0) {
+                  throw "sp.init-custom.xml was not found in the deployed IdentityIQ directory."
+              }
+
+              if ($matches.Count -gt 1) {
+                  Write-Host "Multiple sp.init-custom.xml files were found:"
+
+                  $matches |
+                    Select-Object FullName, Length, LastWriteTime |
+                    Format-Table -AutoSize
+
+                  throw "Multiple sp.init-custom.xml files were found. Configure IIQ_IMPORT_FILE with the required file."
+              }
+
+              $resolvedImportFile = $matches[0].FullName
+          }
+
+          $launcherCandidates = @(
+              (Join-Path $env:IIQ_BIN "iiq.bat"),
+              (Join-Path $env:IIQ_BIN "iiq.cmd"),
+              (Join-Path $env:IIQ_BIN "iiq.exe")
+          )
+
+          $launcher = $launcherCandidates |
+            Where-Object {
+                Test-Path $_ -PathType Leaf
+            } |
+            Select-Object -First 1
+
+          if (-not $launcher) {
+              Write-Host "Files available in the IIQ bin directory:"
+
+              Get-ChildItem `
+                -Path $env:IIQ_BIN `
+                -File |
+                Select-Object Name, FullName |
+                Format-Table -AutoSize
+
+              throw "No supported IdentityIQ console launcher was found."
+          }
+
+          "IIQ_LAUNCHER=$launcher" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "IIQ_IMPORT_FILE=$resolvedImportFile" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host ""
+          Write-Host "IdentityIQ console launcher:"
+          Write-Host $launcher
+
+          Write-Host ""
+          Write-Host "IdentityIQ import file:"
+          Write-Host $resolvedImportFile
+
+
+      # =====================================================
+      # 19. PREPARE IIQ CONSOLE COMMAND FILE
+      # =====================================================
+      - name: Prepare IIQ Console Import Commands
+        shell: powershell
+        run: |
+          Write-Host "===== PREPARE IIQ IMPORT COMMANDS ====="
+
+          if (-not $env:IIQ_LAUNCHER) {
+              throw "IIQ_LAUNCHER was not set."
+          }
+
+          if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
+              throw "IIQ launcher does not exist: $env:IIQ_LAUNCHER"
+          }
+
+          if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
+              throw "IIQ import file does not exist: $env:IIQ_IMPORT_FILE"
+          }
+
+          $commandFile = Join-Path `
+            -Path $env:RUNNER_TEMP `
+            -ChildPath "iiq-import-$env:GITHUB_RUN_ID.txt"
+
+          $logFile = Join-Path `
+            -Path $env:RUNNER_TEMP `
+            -ChildPath "iiq-import-$env:GITHUB_RUN_ID.log"
+
+          $importCommand = 'import "' + $env:IIQ_IMPORT_FILE + '"'
+
+          @(
+              $importCommand
+              "exit"
+          ) |
+            Set-Content `
+              -Path $commandFile `
+              -Encoding ASCII
+
+          if (-not (Test-Path $commandFile -PathType Leaf)) {
+              throw "IIQ console command file could not be created."
+          }
+
+          "IIQ_COMMAND_FILE=$commandFile" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          "IIQ_IMPORT_LOG=$logFile" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "IIQ command file created:"
+          Write-Host $commandFile
+
+          Write-Host ""
+          Write-Host "Commands that will be executed:"
+
+          Get-Content $commandFile
+
+
+      # =====================================================
+      # 20. IMPORT IIQ CONFIGURATIONS
+      # =====================================================
+      - name: Import IIQ Configurations
+        shell: powershell
+        run: |
+          Write-Host "===== IMPORT IIQ CONFIGURATIONS ====="
+
+          if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
+              throw "IIQ console launcher does not exist: $env:IIQ_LAUNCHER"
+          }
+
+          if (-not (Test-Path $env:IIQ_COMMAND_FILE -PathType Leaf)) {
+              throw "IIQ command file does not exist: $env:IIQ_COMMAND_FILE"
+          }
+
+          if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
+              throw "IIQ import file does not exist: $env:IIQ_IMPORT_FILE"
+          }
+
+          Set-Location $env:IIQ_BIN
+
+          Write-Host "Working directory:"
+          Write-Host (Get-Location).Path
+
+          Write-Host ""
+          Write-Host "Console launcher:"
+          Write-Host $env:IIQ_LAUNCHER
+
+          Write-Host ""
+          Write-Host "Import file:"
+          Write-Host $env:IIQ_IMPORT_FILE
+
+          Write-Host ""
+          Write-Host "Starting IIQ console import..."
+
+          $consoleCommand =
+              "`"$env:IIQ_LAUNCHER`" console " +
+              "< `"$env:IIQ_COMMAND_FILE`" " +
+              "> `"$env:IIQ_IMPORT_LOG`" 2>&1"
+
+          & cmd.exe /d /s /c $consoleCommand
+
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "===== IIQ CONSOLE OUTPUT ====="
+
+          if (Test-Path $env:IIQ_IMPORT_LOG -PathType Leaf) {
+              Get-Content `
+                -Path $env:IIQ_IMPORT_LOG `
+                -ErrorAction Stop
+          }
+          else {
+              throw "IIQ console did not generate an import log."
+          }
+
+          Write-Host ""
+          Write-Host "IIQ console exit code: $exitCode"
+
+          if ($exitCode -ne 0) {
+              throw "IdentityIQ configuration import failed with exit code $exitCode."
+          }
+
+          $failurePatterns = @(
+              "Exception",
+              "Import failed",
+              "Unable to import",
+              "FileNotFoundException",
+              "BeanShell.*Error",
+              "GeneralException"
+          )
+
+          $failureMatches = Select-String `
+            -Path $env:IIQ_IMPORT_LOG `
+            -Pattern $failurePatterns `
+            -CaseSensitive:$false `
+            -ErrorAction SilentlyContinue
+
+          if ($failureMatches) {
+              Write-Host ""
+              Write-Host "Possible import errors were found:"
+
+              $failureMatches |
+                ForEach-Object {
+                    Write-Host $_.Line
+                }
+
+              throw "IdentityIQ configuration import output contains an error."
+          }
+
+          "IIQ_IMPORT_STATUS=SUCCESS" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host ""
+          Write-Host "IdentityIQ configuration import completed successfully."
+
+
+      # =====================================================
+      # 21. CLEAN TEMPORARY IIQ COMMAND FILE
+      # =====================================================
+      - name: Clean Temporary IIQ Command File
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host "===== CLEAN TEMPORARY IIQ FILES ====="
+
+          if (
+              $env:IIQ_COMMAND_FILE -and
+              (Test-Path $env:IIQ_COMMAND_FILE)
+          ) {
+              Remove-Item `
+                -Path $env:IIQ_COMMAND_FILE `
+                -Force
+
+              Write-Host "Temporary IIQ command file removed."
+          }
+
+          if (
+              $env:IIQ_IMPORT_LOG -and
+              (Test-Path $env:IIQ_IMPORT_LOG)
+          ) {
+              Write-Host "IIQ import log:"
+              Write-Host $env:IIQ_IMPORT_LOG
+          }
+
+
+      # =====================================================
+      # 22. FINAL DEPLOYMENT VERIFICATION
       # =====================================================
       - name: Final Deployment Verification
         shell: powershell
@@ -675,7 +960,17 @@ jobs:
 
           Write-Host ""
           Write-Host "Tomcat Status:"
-          sc.exe query $env:TOMCAT_SERVICE
+
+          $tomcatStatus = sc.exe query $env:TOMCAT_SERVICE
+          $tomcatStatus | Write-Host
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to query Tomcat during final verification."
+          }
+
+          if ($tomcatStatus -notmatch "RUNNING") {
+              throw "Tomcat is not RUNNING after deployment."
+          }
 
           Write-Host ""
           Write-Host "Deployed WAR:"
@@ -697,8 +992,39 @@ jobs:
             Format-List FullName, LastWriteTime
 
           Write-Host ""
+          Write-Host "IIQ console launcher:"
+          Write-Host $env:IIQ_LAUNCHER
+
+          Write-Host ""
+          Write-Host "IIQ configuration file:"
+          Write-Host $env:IIQ_IMPORT_FILE
+
+          Write-Host ""
+          Write-Host "IIQ configuration import status:"
+          Write-Host $env:IIQ_IMPORT_STATUS
+
+          if ($env:IIQ_IMPORT_STATUS -ne "SUCCESS") {
+              throw "IIQ configuration import was not completed successfully."
+          }
+
+          Write-Host ""
           Write-Host "Rollback directory:"
           Write-Host $env:CURRENT_BACKUP
 
           Write-Host ""
-          Write-Host "QA deployment completed successfully."
+          Write-Host "QA deployment and IIQ configuration import completed successfully."
+
+          Add-Content `
+            -Path $env:GITHUB_STEP_SUMMARY `
+            -Value @"
+          ## IdentityIQ QA Deployment
+
+          - Branch: $env:GITHUB_REF_NAME
+          - Commit: $env:GITHUB_SHA
+          - CI run: $env:CI_RUN_ID
+          - WAR verification: Successful
+          - Tomcat status: Running
+          - IdentityIQ expansion: Successful
+          - Configuration import: $env:IIQ_IMPORT_STATUS
+          - Rollback location: $env:CURRENT_BACKUP
+          "@
