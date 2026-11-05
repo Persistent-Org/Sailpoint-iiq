@@ -1,7 +1,7 @@
 name: Deploy IdentityIQ to QA
 
 on:
-  # CD starts when an approved PR is merged into develop.
+  # CD begins when changes are merged or pushed to develop.
   # CI also starts from the same develop push.
   push:
     branches:
@@ -33,6 +33,7 @@ jobs:
       IIQ_WAR: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq.war'
       IIQ_EXPLODED: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq'
       IIQ_BIN: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin'
+      IIQ_LAUNCHER: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\bin\iiq.bat'
       IIQ_IMPORT_FILE: 'C:\Program Files\Apache Software Foundation\Tomcat 9.0\webapps\identityiq\WEB-INF\config\sp.init-custom.xml'
 
       DOWNLOAD_DIR: 'C:\actions-runner\_work\_deploy\iiq'
@@ -206,7 +207,7 @@ jobs:
             -Force |
             Out-Null
 
-          if (-not (Test-Path $env:DOWNLOAD_DIR)) {
+          if (-not (Test-Path $env:DOWNLOAD_DIR -PathType Container)) {
               throw "Download directory could not be created."
           }
 
@@ -289,7 +290,7 @@ jobs:
         run: |
           Write-Host "===== SOURCE WAR SHA256 ====="
 
-          if (-not (Test-Path $env:WAR_PATH)) {
+          if (-not (Test-Path $env:WAR_PATH -PathType Leaf)) {
               throw "Downloaded WAR does not exist."
           }
 
@@ -338,7 +339,7 @@ jobs:
             -Force |
             Out-Null
 
-          if (-not (Test-Path $backup)) {
+          if (-not (Test-Path $backup -PathType Container)) {
               throw "Rollback directory could not be created."
           }
 
@@ -360,7 +361,7 @@ jobs:
         run: |
           Write-Host "===== BACKUP CURRENT QA WAR ====="
 
-          if (Test-Path $env:IIQ_WAR) {
+          if (Test-Path $env:IIQ_WAR -PathType Leaf) {
               $backupWar = Join-Path `
                 -Path $env:CURRENT_BACKUP `
                 -ChildPath "identityiq.war"
@@ -370,7 +371,7 @@ jobs:
                 -Destination $backupWar `
                 -Force
 
-              if (-not (Test-Path $backupWar)) {
+              if (-not (Test-Path $backupWar -PathType Leaf)) {
                   throw "Existing QA WAR backup failed."
               }
 
@@ -511,7 +512,7 @@ jobs:
             -Destination $env:IIQ_WAR `
             -Force
 
-          if (-not (Test-Path $env:IIQ_WAR)) {
+          if (-not (Test-Path $env:IIQ_WAR -PathType Leaf)) {
               throw "New IdentityIQ WAR was not deployed."
           }
 
@@ -613,7 +614,7 @@ jobs:
 
 
       # =====================================================
-      # 17. WAIT FOR IDENTITYIQ TO EXPAND
+      # 17. WAIT FOR IDENTITYIQ TO FULLY EXPAND
       # =====================================================
       - name: Wait for IdentityIQ Deployment
         shell: powershell
@@ -622,16 +623,61 @@ jobs:
 
           $timeout = 300
           $elapsed = 0
-          $expanded = $false
+          $ready = $false
+
+          Write-Host "IdentityIQ directory:"
+          Write-Host $env:IIQ_EXPLODED
+
+          Write-Host ""
+          Write-Host "IIQ bin directory:"
+          Write-Host $env:IIQ_BIN
+
+          Write-Host ""
+          Write-Host "Required import file:"
+          Write-Host $env:IIQ_IMPORT_FILE
+
+          Write-Host ""
+          Write-Host "Required IIQ launcher:"
+          Write-Host $env:IIQ_LAUNCHER
 
           while ($elapsed -lt $timeout) {
+              $appExists =
+                  Test-Path `
+                    $env:IIQ_EXPLODED `
+                    -PathType Container
+
+              $binExists =
+                  Test-Path `
+                    $env:IIQ_BIN `
+                    -PathType Container
+
+              $importExists =
+                  Test-Path `
+                    $env:IIQ_IMPORT_FILE `
+                    -PathType Leaf
+
+              $launcherExists =
+                  Test-Path `
+                    $env:IIQ_LAUNCHER `
+                    -PathType Leaf
+
+              Write-Host ""
+              Write-Host "Elapsed: $elapsed seconds"
+              Write-Host "IdentityIQ directory: $appExists"
+              Write-Host "WEB-INF\bin: $binExists"
+              Write-Host "sp.init-custom.xml: $importExists"
+              Write-Host "iiq.bat: $launcherExists"
+
               if (
-                  (Test-Path $env:IIQ_EXPLODED -PathType Container) -and
-                  (Test-Path $env:IIQ_BIN -PathType Container)
+                  $appExists -and
+                  $binExists -and
+                  $importExists -and
+                  $launcherExists
               ) {
-                  $expanded = $true
-                  Write-Host "IdentityIQ expanded directory exists."
-                  Write-Host "IdentityIQ bin directory exists."
+                  $ready = $true
+
+                  Write-Host ""
+                  Write-Host "IdentityIQ deployment is fully expanded."
                   break
               }
 
@@ -639,9 +685,30 @@ jobs:
               $elapsed += 10
           }
 
-          if (-not $expanded) {
-              throw "IdentityIQ was not fully expanded within 300 seconds."
+          if (-not $ready) {
+              Write-Host ""
+              Write-Host "===== DEPLOYMENT DIAGNOSTICS ====="
+
+              if (Test-Path $env:IIQ_EXPLODED) {
+                  Get-ChildItem `
+                    -Path $env:IIQ_EXPLODED `
+                    -Recurse `
+                    -Filter "sp.init-custom.xml" `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object FullName
+
+                  Get-ChildItem `
+                    -Path $env:IIQ_BIN `
+                    -Filter "iiq*" `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object Name, FullName
+              }
+
+              throw "IdentityIQ did not fully deploy within 300 seconds."
           }
+
+          Write-Host ""
+          Write-Host "IdentityIQ deployment validation successful."
 
 
       # =====================================================
@@ -656,105 +723,36 @@ jobs:
               throw "IdentityIQ bin directory does not exist: $env:IIQ_BIN"
           }
 
-          $resolvedImportFile = $env:IIQ_IMPORT_FILE
-
-          if (-not (Test-Path $resolvedImportFile -PathType Leaf)) {
-              Write-Host "Configured import file was not found:"
-              Write-Host $resolvedImportFile
-
-              Write-Host ""
-              Write-Host "Searching the deployed IdentityIQ directory..."
-
-              $matches = @(
-                  Get-ChildItem `
-                    -Path $env:IIQ_EXPLODED `
-                    -Recurse `
-                    -Filter "sp.init-custom.xml" `
-                    -File `
-                    -ErrorAction SilentlyContinue
-              )
-
-              if ($matches.Count -eq 0) {
-                  throw "sp.init-custom.xml was not found in the deployed IdentityIQ directory."
-              }
-
-              if ($matches.Count -gt 1) {
-                  Write-Host "Multiple sp.init-custom.xml files were found:"
-
-                  $matches |
-                    Select-Object FullName, Length, LastWriteTime |
-                    Format-Table -AutoSize
-
-                  throw "Multiple sp.init-custom.xml files were found. Configure IIQ_IMPORT_FILE with the required file."
-              }
-
-              $resolvedImportFile = $matches[0].FullName
+          if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
+              throw "IdentityIQ launcher does not exist: $env:IIQ_LAUNCHER"
           }
 
-          $launcherCandidates = @(
-              (Join-Path $env:IIQ_BIN "iiq.bat"),
-              (Join-Path $env:IIQ_BIN "iiq.cmd"),
-              (Join-Path $env:IIQ_BIN "iiq.exe")
-          )
-
-          $launcher = $launcherCandidates |
-            Where-Object {
-                Test-Path $_ -PathType Leaf
-            } |
-            Select-Object -First 1
-
-          if (-not $launcher) {
-              Write-Host "Files available in the IIQ bin directory:"
-
-              Get-ChildItem `
-                -Path $env:IIQ_BIN `
-                -File |
-                Select-Object Name, FullName |
-                Format-Table -AutoSize
-
-              throw "No supported IdentityIQ console launcher was found."
+          if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
+              throw "IdentityIQ import file does not exist: $env:IIQ_IMPORT_FILE"
           }
 
-          "IIQ_LAUNCHER=$launcher" |
-            Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Encoding utf8 `
-              -Append
-
-          "IIQ_IMPORT_FILE=$resolvedImportFile" |
-            Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Encoding utf8 `
-              -Append
+          Write-Host "IdentityIQ bin directory:"
+          Write-Host $env:IIQ_BIN
 
           Write-Host ""
           Write-Host "IdentityIQ console launcher:"
-          Write-Host $launcher
+          Write-Host $env:IIQ_LAUNCHER
 
           Write-Host ""
           Write-Host "IdentityIQ import file:"
-          Write-Host $resolvedImportFile
+          Write-Host $env:IIQ_IMPORT_FILE
+
+          Write-Host ""
+          Write-Host "IIQ console and import-file validation successful."
 
 
       # =====================================================
-      # 19. PREPARE IIQ CONSOLE COMMAND FILE
+      # 19. PREPARE IIQ CONSOLE IMPORT FILES
       # =====================================================
       - name: Prepare IIQ Console Import Commands
         shell: powershell
         run: |
           Write-Host "===== PREPARE IIQ IMPORT COMMANDS ====="
-
-          if (-not $env:IIQ_LAUNCHER) {
-              throw "IIQ_LAUNCHER was not set."
-          }
-
-          if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
-              throw "IIQ launcher does not exist: $env:IIQ_LAUNCHER"
-          }
-
-          if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
-              throw "IIQ import file does not exist: $env:IIQ_IMPORT_FILE"
-          }
 
           $commandFile = Join-Path `
             -Path $env:RUNNER_TEMP `
@@ -763,6 +761,10 @@ jobs:
           $logFile = Join-Path `
             -Path $env:RUNNER_TEMP `
             -ChildPath "iiq-import-$env:GITHUB_RUN_ID.log"
+
+          $wrapperFile = Join-Path `
+            -Path $env:RUNNER_TEMP `
+            -ChildPath "run-iiq-import-$env:GITHUB_RUN_ID.cmd"
 
           $importCommand = 'import "' + $env:IIQ_IMPORT_FILE + '"'
 
@@ -774,8 +776,23 @@ jobs:
               -Path $commandFile `
               -Encoding ASCII
 
+          @"
+          @echo off
+          cd /d "$env:IIQ_BIN"
+          call "$env:IIQ_LAUNCHER" console < "$commandFile" > "$logFile" 2>&1
+          set IIQ_EXIT_CODE=%ERRORLEVEL%
+          exit /b %IIQ_EXIT_CODE%
+          "@ |
+            Set-Content `
+              -Path $wrapperFile `
+              -Encoding ASCII
+
           if (-not (Test-Path $commandFile -PathType Leaf)) {
-              throw "IIQ console command file could not be created."
+              throw "IIQ command file could not be created."
+          }
+
+          if (-not (Test-Path $wrapperFile -PathType Leaf)) {
+              throw "IIQ wrapper file could not be created."
           }
 
           "IIQ_COMMAND_FILE=$commandFile" |
@@ -790,11 +807,25 @@ jobs:
               -Encoding utf8 `
               -Append
 
-          Write-Host "IIQ command file created:"
+          "IIQ_WRAPPER_FILE=$wrapperFile" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "IIQ command file:"
           Write-Host $commandFile
 
           Write-Host ""
-          Write-Host "Commands that will be executed:"
+          Write-Host "IIQ wrapper file:"
+          Write-Host $wrapperFile
+
+          Write-Host ""
+          Write-Host "IIQ import log:"
+          Write-Host $logFile
+
+          Write-Host ""
+          Write-Host "Commands that will be sent to IIQ console:"
 
           Get-Content $commandFile
 
@@ -808,24 +839,26 @@ jobs:
           Write-Host "===== IMPORT IIQ CONFIGURATIONS ====="
 
           if (-not (Test-Path $env:IIQ_LAUNCHER -PathType Leaf)) {
-              throw "IIQ console launcher does not exist: $env:IIQ_LAUNCHER"
-          }
-
-          if (-not (Test-Path $env:IIQ_COMMAND_FILE -PathType Leaf)) {
-              throw "IIQ command file does not exist: $env:IIQ_COMMAND_FILE"
+              throw "IIQ launcher does not exist: $env:IIQ_LAUNCHER"
           }
 
           if (-not (Test-Path $env:IIQ_IMPORT_FILE -PathType Leaf)) {
               throw "IIQ import file does not exist: $env:IIQ_IMPORT_FILE"
           }
 
-          Set-Location $env:IIQ_BIN
+          if (-not (Test-Path $env:IIQ_COMMAND_FILE -PathType Leaf)) {
+              throw "IIQ command file does not exist: $env:IIQ_COMMAND_FILE"
+          }
+
+          if (-not (Test-Path $env:IIQ_WRAPPER_FILE -PathType Leaf)) {
+              throw "IIQ wrapper file does not exist: $env:IIQ_WRAPPER_FILE"
+          }
 
           Write-Host "Working directory:"
-          Write-Host (Get-Location).Path
+          Write-Host $env:IIQ_BIN
 
           Write-Host ""
-          Write-Host "Console launcher:"
+          Write-Host "IIQ launcher:"
           Write-Host $env:IIQ_LAUNCHER
 
           Write-Host ""
@@ -833,14 +866,12 @@ jobs:
           Write-Host $env:IIQ_IMPORT_FILE
 
           Write-Host ""
-          Write-Host "Starting IIQ console import..."
+          Write-Host "Starting IdentityIQ console import..."
 
-          $consoleCommand =
-              "`"$env:IIQ_LAUNCHER`" console " +
-              "< `"$env:IIQ_COMMAND_FILE`" " +
-              "> `"$env:IIQ_IMPORT_LOG`" 2>&1"
-
-          & cmd.exe /d /s /c $consoleCommand
+          & cmd.exe `
+            /d `
+            /c `
+            "`"$env:IIQ_WRAPPER_FILE`""
 
           $exitCode = $LASTEXITCODE
 
@@ -869,7 +900,8 @@ jobs:
               "Unable to import",
               "FileNotFoundException",
               "BeanShell.*Error",
-              "GeneralException"
+              "GeneralException",
+              "error importing"
           )
 
           $failureMatches = Select-String `
@@ -880,7 +912,7 @@ jobs:
 
           if ($failureMatches) {
               Write-Host ""
-              Write-Host "Possible import errors were found:"
+              Write-Host "Potential import errors were found:"
 
               $failureMatches |
                 ForEach-Object {
@@ -901,30 +933,39 @@ jobs:
 
 
       # =====================================================
-      # 21. CLEAN TEMPORARY IIQ COMMAND FILE
+      # 21. CLEAN TEMPORARY IIQ FILES
       # =====================================================
-      - name: Clean Temporary IIQ Command File
+      - name: Clean Temporary IIQ Files
         if: always()
         shell: powershell
         run: |
           Write-Host "===== CLEAN TEMPORARY IIQ FILES ====="
 
-          if (
-              $env:IIQ_COMMAND_FILE -and
-              (Test-Path $env:IIQ_COMMAND_FILE)
-          ) {
-              Remove-Item `
-                -Path $env:IIQ_COMMAND_FILE `
-                -Force
+          $temporaryFiles = @(
+              $env:IIQ_COMMAND_FILE
+              $env:IIQ_WRAPPER_FILE
+          )
 
-              Write-Host "Temporary IIQ command file removed."
+          foreach ($temporaryFile in $temporaryFiles) {
+              if (
+                  $temporaryFile -and
+                  (Test-Path $temporaryFile)
+              ) {
+                  Remove-Item `
+                    -Path $temporaryFile `
+                    -Force
+
+                  Write-Host "Removed:"
+                  Write-Host $temporaryFile
+              }
           }
 
           if (
               $env:IIQ_IMPORT_LOG -and
               (Test-Path $env:IIQ_IMPORT_LOG)
           ) {
-              Write-Host "IIQ import log:"
+              Write-Host ""
+              Write-Host "IIQ import log retained until workflow completion:"
               Write-Host $env:IIQ_IMPORT_LOG
           }
 
@@ -1025,6 +1066,7 @@ jobs:
           - WAR verification: Successful
           - Tomcat status: Running
           - IdentityIQ expansion: Successful
+          - IIQ launcher: iiq.bat
           - Configuration import: $env:IIQ_IMPORT_STATUS
           - Rollback location: $env:CURRENT_BACKUP
           "@
