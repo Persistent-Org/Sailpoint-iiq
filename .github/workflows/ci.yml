@@ -1,34 +1,43 @@
 name: CI - Build & Validate (SailPoint IIQ)
 
+
 on:
-  # Full CI runss only after an approved PR is merged to develop.
-  # The merge creates a push event on develop.
+  # Full CI runs only after an approved PR is merged to develops.
+  # The merge creates a push on develop.
   push:
     branches:
       - develop
 
+
   # Manual execution retained for POC/testing.
   workflow_dispatch:
+
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+
 permissions:
   contents: read
+
 
 env:
   JAVA_VERSION: "17"
   CONFIG_DIR: "config"
 
+
   # SSB target configuration
   SPTARGET: "test"
+
 
   IIQ_VERSION: "8.5"
   IIQ_PACKAGE_PATH: "base/ga/identityiq-8.5.zip"
   WAR_PATH: "build/deploy/identityiq.war"
 
+
 jobs:
+
 
   # =========================================================
   # JOB 1 - VALIDATIONS
@@ -37,25 +46,24 @@ jobs:
     name: Validate SailPoint Changes
     runs-on: ubuntu-latest
 
+
     steps:
 
-      # -------------------------------------------------------
-      # Checkout repository
-      # -------------------------------------------------------
+
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # -------------------------------------------------------
-      # Validate SSB structure
-      # -------------------------------------------------------
+
       - name: Validate SSB Structure
         shell: bash
         run: |
           echo "Validating SailPoint SSB structure..."
 
+
           status=0
+
 
           required_files=(
             "build.xml"
@@ -64,6 +72,7 @@ jobs:
             "scripts/build.java.xml"
           )
 
+
           required_dirs=(
             "base"
             "config"
@@ -71,6 +80,7 @@ jobs:
             "src"
             "lib"
           )
+
 
           for file in "${required_files[@]}"; do
             if [ ! -f "$file" ]; then
@@ -81,6 +91,7 @@ jobs:
             fi
           done
 
+
           for dir in "${required_dirs[@]}"; do
             if [ ! -d "$dir" ]; then
               echo "::error::$dir directory is missing"
@@ -90,7 +101,9 @@ jobs:
             fi
           done
 
+
           exit "$status"
+
 
       # -------------------------------------------------------
       # XML lint
@@ -102,23 +115,29 @@ jobs:
           sudo apt-get install -y -qq libxml2-utils
           xmllint --version
 
+
       - name: Validate IIQ XML Files
         shell: bash
         run: |
           echo "Validating SailPoint XML files..."
 
+
           status=0
           count=0
+
 
           if [ ! -d "$CONFIG_DIR" ]; then
             echo "::error::$CONFIG_DIR directory not found"
             exit 1
           fi
 
+
           while IFS= read -r -d '' file; do
             count=$((count + 1))
 
+
             echo "Checking: $file"
+
 
             if ! xmllint --noout "$file" 2>/tmp/xml_error; then
               echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
@@ -127,6 +146,7 @@ jobs:
               echo "PASS: $file"
             fi
 
+
           done < <(
             find "$CONFIG_DIR" \
               -type f \
@@ -134,76 +154,39 @@ jobs:
               -print0
           )
 
+
           echo "Checked $count XML files"
+
 
           exit "$status"
 
+
       # -------------------------------------------------------
       # Secret scanning
-      #
-      # continue-on-error allows the following notification
-      # step to capture and report the result.
-      # The enforcement step then fails CI if Gitleaks failed.
       # -------------------------------------------------------
       - name: Scan Repository for Secrets
-        id: gitleaks
-        continue-on-error: true
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # -------------------------------------------------------
-      # Gitleaks result notification
-      # -------------------------------------------------------
-      - name: Publish Gitleaks Result
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "## Gitleaks Secret Scan"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Repository | \`${{ github.repository }}\` |"
-            echo "| Branch | \`${{ github.ref_name }}\` |"
-            echo "| Commit | \`${{ github.sha }}\` |"
-            echo "| Run number | \`${{ github.run_number }}\` |"
-            echo "| Result | \`${{ steps.gitleaks.outcome }}\` |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "${{ steps.gitleaks.outcome }}" = "success" ]; then
-            echo "Gitleaks completed successfully."
-            echo "No blocking secret was detected."
-          else
-            echo "::error::Gitleaks detected a secret or the scan failed."
-          fi
-
-      # -------------------------------------------------------
-      # Enforce Gitleaks result
-      # -------------------------------------------------------
-      - name: Enforce Gitleaks Result
-        if: steps.gitleaks.outcome != 'success'
-        shell: bash
-        run: |
-          echo "::error::CI stopped because the Gitleaks result was: ${{ steps.gitleaks.outcome }}"
-          exit 1
 
 
   # =========================================================
   # JOB 2 - BUILD VALIDATION
-  # No approval or additional notification requested.
   # =========================================================
   build:
     name: Build Validation
-    needs:
-      - validate
+    needs: validate
     runs-on: ubuntu-latest
+
 
     steps:
 
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
 
       # -------------------------------------------------------
       # OpenJDK 17
@@ -214,10 +197,12 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
+
       - name: Verify Java
         shell: bash
         run: |
           java -version
+
 
       # -------------------------------------------------------
       # Apache Ant
@@ -229,10 +214,12 @@ jobs:
           sudo apt-get install -y -qq ant unzip
           ant -version
 
+
       - name: Verify SSB Ant Configuration
         shell: bash
         run: |
           ant -p
+
 
       # -------------------------------------------------------
       # Download IdentityIQ 8.5 package
@@ -247,9 +234,12 @@ jobs:
             exit 1
           fi
 
+
           mkdir -p base/ga
 
+
           echo "Downloading IdentityIQ $IIQ_VERSION..."
+
 
           curl \
             --fail \
@@ -259,13 +249,16 @@ jobs:
             --output "$IIQ_PACKAGE_PATH" \
             "$IIQ_BLOB_SAS_URL"
 
+
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
             echo "::error::IdentityIQ package download failed"
             exit 1
           fi
 
+
           echo "IdentityIQ package downloaded successfully"
           ls -lh "$IIQ_PACKAGE_PATH"
+
 
       # -------------------------------------------------------
       # Validate ZIP
@@ -275,11 +268,15 @@ jobs:
         run: |
           echo "Validating IdentityIQ package..."
 
+
           unzip -t "$IIQ_PACKAGE_PATH" > /tmp/iiq-zip-check.txt
+
 
           tail -n 5 /tmp/iiq-zip-check.txt
 
+
           echo "IdentityIQ package validation passed"
+
 
       # -------------------------------------------------------
       # Verify IIQ version
@@ -287,21 +284,23 @@ jobs:
       - name: Verify IdentityIQ Version
         shell: bash
         run: |
-          BUILD_VERSION=$(
-            grep '^IIQVersion=' build.properties \
-              | cut -d '=' -f2 \
-              | tr -d '\r[:space:]'
-          )
+          BUILD_VERSION=$(grep '^IIQVersion=' build.properties \
+            | cut -d '=' -f2 \
+            | tr -d '\r[:space:]')
+
 
           echo "Pipeline IIQ version: $IIQ_VERSION"
           echo "build.properties IIQ version: $BUILD_VERSION"
+
 
           if [ "$BUILD_VERSION" != "$IIQ_VERSION" ]; then
             echo "::error::IdentityIQ version mismatch"
             exit 1
           fi
 
+
           echo "IdentityIQ versions match"
+
 
       # -------------------------------------------------------
       # SSB build validation
@@ -311,14 +310,17 @@ jobs:
         run: |
           export SPTARGET="$SPTARGET"
 
+
           echo "SPTARGET=$SPTARGET"
           echo "Running SailPoint SSB build..."
 
+
           ant main
+
 
       # -------------------------------------------------------
       # Dependency vulnerability scan intentionally deferred.
-      # Unit tests are not included in the current POC.
+      # Unit tests are not included in current POC.
       # -------------------------------------------------------
       - name: Build Validation Summary
         shell: bash
@@ -328,34 +330,36 @@ jobs:
           echo "Dependency vulnerability scanning is deferred for the current POC."
 
 
+
+
   # =========================================================
-  # JOB 3 - BUILD IDENTITYIQ WAR
-  #
-  # The WAR is built without an approval.
-  # The versioned artifact name is generated here.
-  # The WAR is temporarily uploaded so that a later job can
-  # download it after approval.
+  # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
   # =========================================================
   artifact:
-    name: Build IdentityIQ WAR
+    name: Build and Publish IdentityIQ Artifact
+
+
     needs:
       - validate
       - build
+
+
     runs-on: ubuntu-latest
 
-    outputs:
-      artifact_name: ${{ steps.artifact.outputs.artifact_name }}
 
     steps:
 
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
 
       - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
+
 
       - name: Install Apache Ant
         shell: bash
@@ -364,8 +368,9 @@ jobs:
           sudo apt-get install -y -qq ant unzip
           ant -version
 
+
       # -------------------------------------------------------
-      # Fresh runner requires the IdentityIQ package again
+      # Fresh runner requires IIQ package again
       # -------------------------------------------------------
       - name: Download IdentityIQ 8.5 Base Package
         shell: bash
@@ -377,9 +382,12 @@ jobs:
             exit 1
           fi
 
+
           mkdir -p base/ga
 
+
           echo "Downloading IdentityIQ $IIQ_VERSION..."
+
 
           curl \
             --fail \
@@ -389,33 +397,37 @@ jobs:
             --output "$IIQ_PACKAGE_PATH" \
             "$IIQ_BLOB_SAS_URL"
 
+
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
             echo "::error::IdentityIQ package download failed"
             exit 1
           fi
 
+
           echo "IdentityIQ package downloaded successfully"
           ls -lh "$IIQ_PACKAGE_PATH"
 
+
       # -------------------------------------------------------
-      # Build IdentityIQ WAR
-      # No approval or notification requested for this step
+      # Generate WAR
       # -------------------------------------------------------
       - name: Build IdentityIQ WAR
         shell: bash
         run: |
           export SPTARGET="$SPTARGET"
 
+
           echo "SPTARGET=$SPTARGET"
           echo "Building IdentityIQ WAR..."
 
+
           ant war
 
+
       # -------------------------------------------------------
-      # Generate versioned artifact name
-      # Notification required
+      # Verify and version WAR
       # -------------------------------------------------------
-      - name: Generate Versioned Artifact Name
+      - name: Version Deployment Artifact
         id: artifact
         shell: bash
         run: |
@@ -424,229 +436,45 @@ jobs:
             exit 1
           fi
 
+
           SHORT_SHA="${GITHUB_SHA::7}"
+
+
           ARTIFACT_NAME="identityiq-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
 
-          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## IdentityIQ Artifact Name Generated"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Artifact name | \`${ARTIFACT_NAME}\` |"
-            echo "| IIQ version | \`${IIQ_VERSION}\` |"
-            echo "| SPTARGET | \`${SPTARGET}\` |"
-            echo "| Commit | \`${GITHUB_SHA}\` |"
-            echo "| Run number | \`${GITHUB_RUN_NUMBER}\` |"
-            echo "| Status | Waiting for approval before copying the WAR to dist |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Generated artifact name: $ARTIFACT_NAME"
-
-      # -------------------------------------------------------
-      # Stage the generated WAR temporarily
-      # -------------------------------------------------------
-      - name: Stage WAR for Approval Job
-        shell: bash
-        run: |
-          ARTIFACT_NAME="${{ steps.artifact.outputs.artifact_name }}"
-
-          mkdir -p approval-staging
-
-          cp "$WAR_PATH" \
-            "approval-staging/${ARTIFACT_NAME}.war"
-
-          if [ ! -f "approval-staging/${ARTIFACT_NAME}.war" ]; then
-            echo "::error::WAR staging failed"
-            exit 1
-          fi
-
-          echo "WAR staged successfully for the approval job."
-          ls -lh approval-staging
-
-      # -------------------------------------------------------
-      # Temporary artifact for transfer between runners
-      # This is not the final deployment artifact.
-      # -------------------------------------------------------
-      - name: Upload Temporary WAR for Approval
-        uses: actions/upload-artifact@v4
-        with:
-          name: pending-${{ steps.artifact.outputs.artifact_name }}
-          path: approval-staging/${{ steps.artifact.outputs.artifact_name }}.war
-          retention-days: 1
-          if-no-files-found: error
-
-
-  # =========================================================
-  # JOB 4 - APPROVAL BEFORE COPY TO DIST
-  #
-  # Configure a GitHub environment named:
-  # ci-dist-approval
-  #
-  # Configure the required reviewer and prevent self-review
-  # in repository Settings > Environments.
-  # =========================================================
-  approve-dist-copy:
-    name: Approve Copy WAR to Dist
-    needs:
-      - artifact
-    runs-on: ubuntu-latest
-
-    environment:
-      name: ci-dist-approval
-
-    steps:
-
-      - name: Record Approval
-        shell: bash
-        run: |
-          {
-            echo "## Copy WAR to Dist Approved"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Artifact | \`${{ needs.artifact.outputs.artifact_name }}\` |"
-            echo "| Environment | \`ci-dist-approval\` |"
-            echo "| Result | Approval completed |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Approval received."
-          echo "Copy WAR to dist can proceed."
-
-
-  # =========================================================
-  # JOB 5 - COPY, CHECKSUM AND PUBLISH
-  #
-  # This runs only after the protected environment approval.
-  # =========================================================
-  publish-artifact:
-    name: Copy and Publish IdentityIQ Artifact
-    needs:
-      - artifact
-      - approve-dist-copy
-    runs-on: ubuntu-latest
-
-    steps:
-
-      # -------------------------------------------------------
-      # Download WAR produced before approval
-      # -------------------------------------------------------
-      - name: Download Approved WAR
-        uses: actions/download-artifact@v4
-        with:
-          name: pending-${{ needs.artifact.outputs.artifact_name }}
-          path: approved-war
-
-      # -------------------------------------------------------
-      # Copy WAR to dist after approval
-      # -------------------------------------------------------
-      - name: Copy WAR to Dist
-        shell: bash
-        run: |
-          ARTIFACT_NAME="${{ needs.artifact.outputs.artifact_name }}"
-          SOURCE_WAR="approved-war/${ARTIFACT_NAME}.war"
-
-          if [ ! -f "$SOURCE_WAR" ]; then
-            echo "::error::Approved WAR not found at $SOURCE_WAR"
-            exit 1
-          fi
 
           mkdir -p dist
 
-          cp "$SOURCE_WAR" \
+
+          cp "$WAR_PATH" \
             "dist/${ARTIFACT_NAME}.war"
 
-          if [ ! -f "dist/${ARTIFACT_NAME}.war" ]; then
-            echo "::error::WAR was not copied to dist"
-            exit 1
-          fi
-
-          echo "WAR copied to dist after approval."
-          ls -lh dist
-
-      # -------------------------------------------------------
-      # Generate SHA-256 checksum
-      # -------------------------------------------------------
-      - name: Generate WAR Checksum
-        shell: bash
-        run: |
-          ARTIFACT_NAME="${{ needs.artifact.outputs.artifact_name }}"
 
           cd dist
+
 
           sha256sum "${ARTIFACT_NAME}.war" \
             > "${ARTIFACT_NAME}.war.sha256"
 
-          if [ ! -s "${ARTIFACT_NAME}.war.sha256" ]; then
-            echo "::error::Checksum generation failed"
-            exit 1
-          fi
 
-          echo "Checksum generated:"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
+
+          echo "Artifact created:"
+          echo "${ARTIFACT_NAME}.war"
+
+
+          echo "Checksum:"
           cat "${ARTIFACT_NAME}.war.sha256"
 
+
       # -------------------------------------------------------
-      # Publish final WAR and checksum
+      # Publish WAR
       # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
-        id: publish
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.artifact.outputs.artifact_name }}
-          path: |
-            dist/${{ needs.artifact.outputs.artifact_name }}.war
-            dist/${{ needs.artifact.outputs.artifact_name }}.war.sha256
+          name: ${{ steps.artifact.outputs.artifact_name }}
+          path: dist/*
           retention-days: 30
           if-no-files-found: error
-
-      # -------------------------------------------------------
-      # Publication success notification
-      # -------------------------------------------------------
-      - name: Publish Artifact Success Notification
-        if: success()
-        shell: bash
-        run: |
-          ARTIFACT_NAME="${{ needs.artifact.outputs.artifact_name }}"
-          CHECKSUM=$(cat "dist/${ARTIFACT_NAME}.war.sha256")
-
-          {
-            echo "## IdentityIQ Artifact Published"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Artifact | \`${ARTIFACT_NAME}\` |"
-            echo "| IIQ version | \`${IIQ_VERSION}\` |"
-            echo "| SPTARGET | \`${SPTARGET}\` |"
-            echo "| Retention | \`30 days\` |"
-            echo "| Checksum | \`${CHECKSUM}\` |"
-            echo "| Result | Successfully published |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Artifact publication completed successfully."
-          echo "Artifact: $ARTIFACT_NAME"
-          echo "Checksum: $CHECKSUM"
-
-      # -------------------------------------------------------
-      # Publication failure notification
-      # -------------------------------------------------------
-      - name: Publish Artifact Failure Notification
-        if: failure()
-        shell: bash
-        run: |
-          {
-            echo "## IdentityIQ Artifact Publication Failed"
-            echo ""
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Artifact | \`${{ needs.artifact.outputs.artifact_name }}\` |"
-            echo "| Run number | \`${GITHUB_RUN_NUMBER}\` |"
-            echo "| Result | Failed |"
-            echo "| Action | Review the failed download, copy, checksum or publication step |"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "::error::IdentityIQ artifact publication failed."
