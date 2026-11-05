@@ -1,7 +1,7 @@
 name: CI - Build & Validate (SailPoint IIQ)
 
 on:
-  # Full CI runs only after an approved PR is merged to develop.
+  # Full CI runs only after an approved PR is merged to develops.
   # The merge creates a push on develop.
   push:
     branches:
