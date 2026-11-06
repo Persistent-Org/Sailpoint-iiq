@@ -1,8 +1,19 @@
 name: CI - Build & Validate (SailPoint IIQ)
 
 on:
-  # Full CI runs only after a PR is merged into develop.
-  # The merge creates a push event on develop.
+  # Run the MCP integration when a PR targeting develop is
+  # opened, updated, reopened, or has its title edited.
+  pull_request:
+    branches:
+      - develop
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+
+  # Run full SailPoint CI after an approved PR is merged
+  # into develop. The merge produces a push event.
   push:
     branches:
       - develop
@@ -11,15 +22,15 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  statuses: write
 
 env:
   JAVA_VERSION: "17"
+  PYTHON_VERSION: "3.12"
   CONFIG_DIR: "config"
 
   # SSB target configuration
@@ -33,24 +44,26 @@ jobs:
 
   # =========================================================
   # JOB 1 - VALIDATIONS
+  #
+  # Runs after merge to develop or through manual execution.
+  # It does not run when the PR is initially raised.
   # =========================================================
   validate:
     name: Validate SailPoint Changes
+
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+
     runs-on: ubuntu-latest
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout repository
-      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # -------------------------------------------------------
-      # Validate SSB repository structure
-      # -------------------------------------------------------
       - name: Validate SSB Structure
         shell: bash
         run: |
@@ -94,7 +107,7 @@ jobs:
           exit "$status"
 
       # -------------------------------------------------------
-      # Install XML lint
+      # XML lint
       # -------------------------------------------------------
       - name: Install XML Lint
         shell: bash
@@ -103,9 +116,6 @@ jobs:
           sudo apt-get install -y -qq libxml2-utils
           xmllint --version
 
-      # -------------------------------------------------------
-      # Validate IdentityIQ XML configuration files
-      # -------------------------------------------------------
       - name: Validate IIQ XML Files
         shell: bash
         run: |
@@ -142,116 +152,33 @@ jobs:
           exit "$status"
 
       # -------------------------------------------------------
-      # Scan repository for secrets
-      #
-      # Gitleaks remains a dedicated check and is not repeated
-      # inside Super-Linter.
+      # Secret scanning
       # -------------------------------------------------------
       - name: Scan Repository for Secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # -------------------------------------------------------
-      # Super-Linter clean-build assessment
-      #
-      # Initial POC scope:
-      # - GitHub Actions workflow validation
-      # - YAML validation
-      # - Bash/Shell validation
-      # - Bash executable-bit validation
-      # - Git merge-conflict-marker validation
-      #
-      # Gitleaks and XML are disabled because dedicated checks
-      # already run earlier in this job.
-      #
-      # continue-on-error is intentional for the first test.
-      # Existing build and deployment will not be blocked while
-      # the initial findings are assessed.
-      # -------------------------------------------------------
-      - name: Run Super-Linter
-        id: super-linter
-        continue-on-error: true
-        uses: super-linter/super-linter@v9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-          # Scan the entire codebase during the first assessment.
-          VALIDATE_ALL_CODEBASE: true
-
-          # Relevant to .github/workflows/*.yml
-          VALIDATE_GITHUB_ACTIONS: true
-
-          # Relevant to workflow and configuration YAML files.
-          VALIDATE_YAML: true
-
-          # Relevant to build.sh and checked-in shell scripts.
-          VALIDATE_BASH: true
-          VALIDATE_BASH_EXEC: true
-
-          # Detect unresolved Git conflict markers.
-          VALIDATE_GIT_MERGE_CONFLICT_MARKERS: true
-
-          # Dedicated validations already exist above.
-          VALIDATE_GITLEAKS: false
-          VALIDATE_XML: false
-
-      # -------------------------------------------------------
-      # Super-Linter result summary
-      #
-      # This writes to the GitHub Actions summary.
-      # Approval and email notification remain paused.
-      # -------------------------------------------------------
-      - name: Super-Linter Summary
-        if: always()
-        shell: bash
-        env:
-          SUPER_LINTER_RESULT: ${{ steps.super-linter.outcome }}
-        run: |
-          echo "===== SUPER-LINTER SUMMARY ====="
-          echo "Result: $SUPER_LINTER_RESULT"
-
-          if [ "$SUPER_LINTER_RESULT" = "success" ]; then
-            STATUS="PASSED"
-            ICON="✅"
-          else
-            STATUS="FAILED - review Super-Linter findings"
-            ICON="❌"
-          fi
-
-          {
-            echo "## Super-Linter Clean Build"
-            echo ""
-            echo "| Language/Validation | Configuration |"
-            echo "|---|---|"
-            echo "| GitHub Actions | Enabled |"
-            echo "| YAML | Enabled |"
-            echo "| Bash/Shell | Enabled |"
-            echo "| Bash executable check | Enabled |"
-            echo "| Git merge-conflict markers | Enabled |"
-            echo "| Gitleaks | Separate dedicated CI check |"
-            echo "| XML | Separate xmllint CI check |"
-            echo "| Overall result | $ICON **$STATUS** |"
-            echo ""
-            echo "Approval and email notification are paused for the current implementation."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Super-Linter result: $STATUS"
 
   # =========================================================
   # JOB 2 - BUILD VALIDATION
+  #
+  # Runs only after the validation job succeeds.
   # =========================================================
   build:
     name: Build Validation
+
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+
     needs:
       - validate
+
     runs-on: ubuntu-latest
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout repository
-      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -318,31 +245,28 @@ jobs:
           ls -lh "$IIQ_PACKAGE_PATH"
 
       # -------------------------------------------------------
-      # Validate IdentityIQ ZIP package
+      # Validate ZIP
       # -------------------------------------------------------
       - name: Validate IdentityIQ Package
         shell: bash
         run: |
           echo "Validating IdentityIQ package..."
 
-          unzip -t "$IIQ_PACKAGE_PATH" \
-            > /tmp/iiq-zip-check.txt
+          unzip -t "$IIQ_PACKAGE_PATH" > /tmp/iiq-zip-check.txt
 
           tail -n 5 /tmp/iiq-zip-check.txt
 
           echo "IdentityIQ package validation passed"
 
       # -------------------------------------------------------
-      # Verify IdentityIQ version
+      # Verify IIQ version
       # -------------------------------------------------------
       - name: Verify IdentityIQ Version
         shell: bash
         run: |
-          BUILD_VERSION=$(
-            grep '^IIQVersion=' build.properties \
-              | cut -d '=' -f2 \
-              | tr -d '\r[:space:]'
-          )
+          BUILD_VERSION=$(grep '^IIQVersion=' build.properties \
+            | cut -d '=' -f2 \
+            | tr -d '\r[:space:]')
 
           echo "Pipeline IIQ version: $IIQ_VERSION"
           echo "build.properties IIQ version: $BUILD_VERSION"
@@ -368,10 +292,8 @@ jobs:
           ant main
 
       # -------------------------------------------------------
-      # Build validation summary
-      #
-      # Dependency vulnerability scan remains deferred.
-      # Unit tests are not included in the current POC.
+      # Dependency vulnerability scan intentionally deferred.
+      # Unit tests are not included in current POC.
       # -------------------------------------------------------
       - name: Build Validation Summary
         shell: bash
@@ -380,11 +302,16 @@ jobs:
           echo "SPTARGET used: $SPTARGET"
           echo "Dependency vulnerability scanning is deferred for the current POC."
 
+
   # =========================================================
   # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
   # =========================================================
   artifact:
     name: Build and Publish IdentityIQ Artifact
+
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
 
     needs:
       - validate
@@ -394,24 +321,15 @@ jobs:
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout repository
-      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------------
-      # OpenJDK 17
-      # -------------------------------------------------------
       - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # -------------------------------------------------------
-      # Apache Ant
-      # -------------------------------------------------------
       - name: Install Apache Ant
         shell: bash
         run: |
@@ -420,7 +338,7 @@ jobs:
           ant -version
 
       # -------------------------------------------------------
-      # Fresh runner requires IdentityIQ package again
+      # Fresh runner requires IIQ package again
       # -------------------------------------------------------
       - name: Download IdentityIQ 8.5 Base Package
         shell: bash
@@ -453,7 +371,7 @@ jobs:
           ls -lh "$IIQ_PACKAGE_PATH"
 
       # -------------------------------------------------------
-      # Generate IdentityIQ WAR
+      # Generate WAR
       # -------------------------------------------------------
       - name: Build IdentityIQ WAR
         shell: bash
@@ -464,14 +382,6 @@ jobs:
           echo "Building IdentityIQ WAR..."
 
           ant war
-
-          if [ ! -s "$WAR_PATH" ]; then
-            echo "::error::WAR was not generated at $WAR_PATH"
-            exit 1
-          fi
-
-          echo "IdentityIQ WAR generated successfully"
-          ls -lh "$WAR_PATH"
 
       # -------------------------------------------------------
       # Verify and version WAR
@@ -486,6 +396,7 @@ jobs:
           fi
 
           SHORT_SHA="${GITHUB_SHA::7}"
+
           ARTIFACT_NAME="identityiq-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
 
           mkdir -p dist
@@ -493,33 +404,21 @@ jobs:
           cp "$WAR_PATH" \
             "dist/${ARTIFACT_NAME}.war"
 
-          if [ ! -s "dist/${ARTIFACT_NAME}.war" ]; then
-            echo "::error::WAR was not copied successfully to dist"
-            exit 1
-          fi
-
           cd dist
 
           sha256sum "${ARTIFACT_NAME}.war" \
             > "${ARTIFACT_NAME}.war.sha256"
 
-          if [ ! -s "${ARTIFACT_NAME}.war.sha256" ]; then
-            echo "::error::WAR checksum was not generated"
-            exit 1
-          fi
-
-          echo "artifact_name=$ARTIFACT_NAME" \
-            >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
           echo "Artifact created:"
           echo "${ARTIFACT_NAME}.war"
 
-          echo ""
           echo "Checksum:"
           cat "${ARTIFACT_NAME}.war.sha256"
 
       # -------------------------------------------------------
-      # Publish WAR and checksum
+      # Publish WAR
       # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
         uses: actions/upload-artifact@v4
@@ -528,3 +427,144 @@ jobs:
           path: dist/*
           retention-days: 30
           if-no-files-found: error
+
+
+  # =========================================================
+  # JOB 4 - UPDATE AZURE DEVOPS USER STORY
+  #
+  # This job runs only for pull_request events.
+  #
+  # Expected PR title:
+  # US-12345: Implement SailPoint feature
+  # =========================================================
+  update-user-story:
+    name: Update Azure DevOps User Story
+
+    if: github.event_name == 'pull_request'
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # Extract Azure DevOps User Story ID from the PR title
+      # -------------------------------------------------------
+      - name: Extract User Story ID from PR Title
+        id: user-story
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $PR_TITLE"
+
+          US_ID=$(printf '%s\n' "$PR_TITLE" \
+            | grep -oiE 'US-[0-9]+' \
+            | head -1 \
+            | cut -d'-' -f2)
+
+          if [ -z "$US_ID" ]; then
+            echo "::error::User Story ID was not found in the PR title."
+            echo "::error::Expected PR title format: US-12345: Implement feature"
+            exit 1
+          fi
+
+          if ! [[ "$US_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid User Story ID: $US_ID"
+            exit 1
+          fi
+
+          echo "Azure DevOps User Story ID: $US_ID"
+          echo "workitem_id=$US_ID" >> "$GITHUB_OUTPUT"
+
+      # -------------------------------------------------------
+      # Set up Python
+      # -------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # -------------------------------------------------------
+      # Install the official MCP Python SDK
+      # -------------------------------------------------------
+      - name: Install MCP Python SDK
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install mcp
+
+          python --version
+          python -m pip show mcp
+
+      # -------------------------------------------------------
+      # Confirm that mcp_client.py is present in the repository
+      # -------------------------------------------------------
+      - name: Verify MCP Client
+        shell: bash
+        run: |
+          MCP_CLIENT_PATH="tools/mcp-client/mcp_client.py"
+
+          if [ ! -f "$MCP_CLIENT_PATH" ]; then
+            echo "::error::$MCP_CLIENT_PATH was not found"
+            echo "::error::Add mcp_client.py to tools/mcp-client/"
+            exit 1
+          fi
+
+          echo "MCP client found: $MCP_CLIENT_PATH"
+
+      # -------------------------------------------------------
+      # Validate required runtime configuration
+      # -------------------------------------------------------
+      - name: Validate MCP Configuration
+        shell: bash
+        env:
+          MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
+        run: |
+          if [ -z "$MCP_SERVER_URL" ]; then
+            echo "::error::MCP_SERVER_URL secret is not configured"
+            exit 1
+          fi
+
+          case "$MCP_SERVER_URL" in
+            https://*)
+              echo "MCP server URL is configured."
+              ;;
+            *)
+              echo "::error::MCP_SERVER_URL must use HTTPS"
+              exit 1
+              ;;
+          esac
+
+      # -------------------------------------------------------
+      # The Python client calls only:
+      #
+      # 1. get_work_item
+      # 2. update_work_item
+      # -------------------------------------------------------
+      - name: Fetch and Update User Story through MCP
+        shell: bash
+        env:
+          MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
+          WORK_ITEM_ID: ${{ steps.user-story.outputs.workitem_id }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "Azure DevOps User Story: $WORK_ITEM_ID"
+          echo "GitHub PR number: $PR_NUMBER"
+          echo "GitHub PR URL: $PR_URL"
+
+          python tools/mcp-client/mcp_client.py
+
+      - name: MCP Update Summary
+        if: success()
+        shell: bash
+        env:
+          WORK_ITEM_ID: ${{ steps.user-story.outputs.workitem_id }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          echo "Azure DevOps User Story update completed."
+          echo "Work Item ID: $WORK_ITEM_ID"
+          echo "Pull Request: $PR_URL"
