@@ -1,43 +1,35 @@
 name: CI - Build & Validate (SailPoint IIQ)
 
-
 on:
-  # Full CI runs only after an approved PR is merged to develops.
-  # The merge creates a push on develop.
+  # Full CI runs only after a PR is merged into develop.
+  # The merge creates a push event on develop.
   push:
     branches:
       - develop
 
-
   # Manual execution retained for POC/testing.
   workflow_dispatch:
-
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-
 permissions:
   contents: read
-
+  statuses: write
 
 env:
   JAVA_VERSION: "17"
   CONFIG_DIR: "config"
 
-
   # SSB target configuration
   SPTARGET: "test"
-
 
   IIQ_VERSION: "8.5"
   IIQ_PACKAGE_PATH: "base/ga/identityiq-8.5.zip"
   WAR_PATH: "build/deploy/identityiq.war"
 
-
 jobs:
-
 
   # =========================================================
   # JOB 1 - VALIDATIONS
@@ -46,24 +38,25 @@ jobs:
     name: Validate SailPoint Changes
     runs-on: ubuntu-latest
 
-
     steps:
 
-
+      # -------------------------------------------------------
+      # Checkout repository
+      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-
+      # -------------------------------------------------------
+      # Validate SSB repository structure
+      # -------------------------------------------------------
       - name: Validate SSB Structure
         shell: bash
         run: |
           echo "Validating SailPoint SSB structure..."
 
-
           status=0
-
 
           required_files=(
             "build.xml"
@@ -72,7 +65,6 @@ jobs:
             "scripts/build.java.xml"
           )
 
-
           required_dirs=(
             "base"
             "config"
@@ -80,7 +72,6 @@ jobs:
             "src"
             "lib"
           )
-
 
           for file in "${required_files[@]}"; do
             if [ ! -f "$file" ]; then
@@ -91,7 +82,6 @@ jobs:
             fi
           done
 
-
           for dir in "${required_dirs[@]}"; do
             if [ ! -d "$dir" ]; then
               echo "::error::$dir directory is missing"
@@ -101,12 +91,10 @@ jobs:
             fi
           done
 
-
           exit "$status"
 
-
       # -------------------------------------------------------
-      # XML lint
+      # Install XML lint
       # -------------------------------------------------------
       - name: Install XML Lint
         shell: bash
@@ -115,29 +103,26 @@ jobs:
           sudo apt-get install -y -qq libxml2-utils
           xmllint --version
 
-
+      # -------------------------------------------------------
+      # Validate IdentityIQ XML configuration files
+      # -------------------------------------------------------
       - name: Validate IIQ XML Files
         shell: bash
         run: |
           echo "Validating SailPoint XML files..."
 
-
           status=0
           count=0
-
 
           if [ ! -d "$CONFIG_DIR" ]; then
             echo "::error::$CONFIG_DIR directory not found"
             exit 1
           fi
 
-
           while IFS= read -r -d '' file; do
             count=$((count + 1))
 
-
             echo "Checking: $file"
-
 
             if ! xmllint --noout "$file" 2>/tmp/xml_error; then
               echo "::error file=$file::$(head -n 1 /tmp/xml_error)"
@@ -145,8 +130,6 @@ jobs:
             else
               echo "PASS: $file"
             fi
-
-
           done < <(
             find "$CONFIG_DIR" \
               -type f \
@@ -154,39 +137,123 @@ jobs:
               -print0
           )
 
-
           echo "Checked $count XML files"
-
 
           exit "$status"
 
-
       # -------------------------------------------------------
-      # Secret scanning
+      # Scan repository for secrets
+      #
+      # Gitleaks remains a dedicated check and is not repeated
+      # inside Super-Linter.
       # -------------------------------------------------------
       - name: Scan Repository for Secrets
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # -------------------------------------------------------
+      # Super-Linter clean-build assessment
+      #
+      # Initial POC scope:
+      # - GitHub Actions workflow validation
+      # - YAML validation
+      # - Bash/Shell validation
+      # - Bash executable-bit validation
+      # - Git merge-conflict-marker validation
+      #
+      # Gitleaks and XML are disabled because dedicated checks
+      # already run earlier in this job.
+      #
+      # continue-on-error is intentional for the first test.
+      # Existing build and deployment will not be blocked while
+      # the initial findings are assessed.
+      # -------------------------------------------------------
+      - name: Run Super-Linter
+        id: super-linter
+        continue-on-error: true
+        uses: super-linter/super-linter@v9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+          # Scan the entire codebase during the first assessment.
+          VALIDATE_ALL_CODEBASE: true
 
+          # Relevant to .github/workflows/*.yml
+          VALIDATE_GITHUB_ACTIONS: true
+
+          # Relevant to workflow and configuration YAML files.
+          VALIDATE_YAML: true
+
+          # Relevant to build.sh and checked-in shell scripts.
+          VALIDATE_BASH: true
+          VALIDATE_BASH_EXEC: true
+
+          # Detect unresolved Git conflict markers.
+          VALIDATE_GIT_MERGE_CONFLICT_MARKERS: true
+
+          # Dedicated validations already exist above.
+          VALIDATE_GITLEAKS: false
+          VALIDATE_XML: false
+
+      # -------------------------------------------------------
+      # Super-Linter result summary
+      #
+      # This writes to the GitHub Actions summary.
+      # Approval and email notification remain paused.
+      # -------------------------------------------------------
+      - name: Super-Linter Summary
+        if: always()
+        shell: bash
+        env:
+          SUPER_LINTER_RESULT: ${{ steps.super-linter.outcome }}
+        run: |
+          echo "===== SUPER-LINTER SUMMARY ====="
+          echo "Result: $SUPER_LINTER_RESULT"
+
+          if [ "$SUPER_LINTER_RESULT" = "success" ]; then
+            STATUS="PASSED"
+            ICON="✅"
+          else
+            STATUS="FAILED - review Super-Linter findings"
+            ICON="❌"
+          fi
+
+          {
+            echo "## Super-Linter Clean Build"
+            echo ""
+            echo "| Language/Validation | Configuration |"
+            echo "|---|---|"
+            echo "| GitHub Actions | Enabled |"
+            echo "| YAML | Enabled |"
+            echo "| Bash/Shell | Enabled |"
+            echo "| Bash executable check | Enabled |"
+            echo "| Git merge-conflict markers | Enabled |"
+            echo "| Gitleaks | Separate dedicated CI check |"
+            echo "| XML | Separate xmllint CI check |"
+            echo "| Overall result | $ICON **$STATUS** |"
+            echo ""
+            echo "Approval and email notification are paused for the current implementation."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Super-Linter result: $STATUS"
 
   # =========================================================
   # JOB 2 - BUILD VALIDATION
   # =========================================================
   build:
     name: Build Validation
-    needs: validate
+    needs:
+      - validate
     runs-on: ubuntu-latest
-
 
     steps:
 
-
+      # -------------------------------------------------------
+      # Checkout repository
+      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
-
 
       # -------------------------------------------------------
       # OpenJDK 17
@@ -197,12 +264,10 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-
       - name: Verify Java
         shell: bash
         run: |
           java -version
-
 
       # -------------------------------------------------------
       # Apache Ant
@@ -214,12 +279,10 @@ jobs:
           sudo apt-get install -y -qq ant unzip
           ant -version
 
-
       - name: Verify SSB Ant Configuration
         shell: bash
         run: |
           ant -p
-
 
       # -------------------------------------------------------
       # Download IdentityIQ 8.5 package
@@ -234,12 +297,9 @@ jobs:
             exit 1
           fi
 
-
           mkdir -p base/ga
 
-
           echo "Downloading IdentityIQ $IIQ_VERSION..."
-
 
           curl \
             --fail \
@@ -249,58 +309,50 @@ jobs:
             --output "$IIQ_PACKAGE_PATH" \
             "$IIQ_BLOB_SAS_URL"
 
-
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
             echo "::error::IdentityIQ package download failed"
             exit 1
           fi
 
-
           echo "IdentityIQ package downloaded successfully"
           ls -lh "$IIQ_PACKAGE_PATH"
 
-
       # -------------------------------------------------------
-      # Validate ZIP
+      # Validate IdentityIQ ZIP package
       # -------------------------------------------------------
       - name: Validate IdentityIQ Package
         shell: bash
         run: |
           echo "Validating IdentityIQ package..."
 
-
-          unzip -t "$IIQ_PACKAGE_PATH" > /tmp/iiq-zip-check.txt
-
+          unzip -t "$IIQ_PACKAGE_PATH" \
+            > /tmp/iiq-zip-check.txt
 
           tail -n 5 /tmp/iiq-zip-check.txt
 
-
           echo "IdentityIQ package validation passed"
 
-
       # -------------------------------------------------------
-      # Verify IIQ version
+      # Verify IdentityIQ version
       # -------------------------------------------------------
       - name: Verify IdentityIQ Version
         shell: bash
         run: |
-          BUILD_VERSION=$(grep '^IIQVersion=' build.properties \
-            | cut -d '=' -f2 \
-            | tr -d '\r[:space:]')
-
+          BUILD_VERSION=$(
+            grep '^IIQVersion=' build.properties \
+              | cut -d '=' -f2 \
+              | tr -d '\r[:space:]'
+          )
 
           echo "Pipeline IIQ version: $IIQ_VERSION"
           echo "build.properties IIQ version: $BUILD_VERSION"
-
 
           if [ "$BUILD_VERSION" != "$IIQ_VERSION" ]; then
             echo "::error::IdentityIQ version mismatch"
             exit 1
           fi
 
-
           echo "IdentityIQ versions match"
-
 
       # -------------------------------------------------------
       # SSB build validation
@@ -310,17 +362,16 @@ jobs:
         run: |
           export SPTARGET="$SPTARGET"
 
-
           echo "SPTARGET=$SPTARGET"
           echo "Running SailPoint SSB build..."
 
-
           ant main
 
-
       # -------------------------------------------------------
-      # Dependency vulnerability scan intentionally deferred.
-      # Unit tests are not included in current POC.
+      # Build validation summary
+      #
+      # Dependency vulnerability scan remains deferred.
+      # Unit tests are not included in the current POC.
       # -------------------------------------------------------
       - name: Build Validation Summary
         shell: bash
@@ -329,38 +380,38 @@ jobs:
           echo "SPTARGET used: $SPTARGET"
           echo "Dependency vulnerability scanning is deferred for the current POC."
 
-
-
-
   # =========================================================
   # JOB 3 - BUILD AND PUBLISH DEPLOYMENT ARTIFACT
   # =========================================================
   artifact:
     name: Build and Publish IdentityIQ Artifact
 
-
     needs:
       - validate
       - build
 
-
     runs-on: ubuntu-latest
-
 
     steps:
 
-
+      # -------------------------------------------------------
+      # Checkout repository
+      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-
+      # -------------------------------------------------------
+      # OpenJDK 17
+      # -------------------------------------------------------
       - name: Setup OpenJDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-
+      # -------------------------------------------------------
+      # Apache Ant
+      # -------------------------------------------------------
       - name: Install Apache Ant
         shell: bash
         run: |
@@ -368,9 +419,8 @@ jobs:
           sudo apt-get install -y -qq ant unzip
           ant -version
 
-
       # -------------------------------------------------------
-      # Fresh runner requires IIQ package again
+      # Fresh runner requires IdentityIQ package again
       # -------------------------------------------------------
       - name: Download IdentityIQ 8.5 Base Package
         shell: bash
@@ -382,12 +432,9 @@ jobs:
             exit 1
           fi
 
-
           mkdir -p base/ga
 
-
           echo "Downloading IdentityIQ $IIQ_VERSION..."
-
 
           curl \
             --fail \
@@ -397,32 +444,34 @@ jobs:
             --output "$IIQ_PACKAGE_PATH" \
             "$IIQ_BLOB_SAS_URL"
 
-
           if [ ! -s "$IIQ_PACKAGE_PATH" ]; then
             echo "::error::IdentityIQ package download failed"
             exit 1
           fi
 
-
           echo "IdentityIQ package downloaded successfully"
           ls -lh "$IIQ_PACKAGE_PATH"
 
-
       # -------------------------------------------------------
-      # Generate WAR
+      # Generate IdentityIQ WAR
       # -------------------------------------------------------
       - name: Build IdentityIQ WAR
         shell: bash
         run: |
           export SPTARGET="$SPTARGET"
 
-
           echo "SPTARGET=$SPTARGET"
           echo "Building IdentityIQ WAR..."
 
-
           ant war
 
+          if [ ! -s "$WAR_PATH" ]; then
+            echo "::error::WAR was not generated at $WAR_PATH"
+            exit 1
+          fi
+
+          echo "IdentityIQ WAR generated successfully"
+          ls -lh "$WAR_PATH"
 
       # -------------------------------------------------------
       # Verify and version WAR
@@ -436,40 +485,41 @@ jobs:
             exit 1
           fi
 
-
           SHORT_SHA="${GITHUB_SHA::7}"
-
-
           ARTIFACT_NAME="identityiq-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
 
-
           mkdir -p dist
-
 
           cp "$WAR_PATH" \
             "dist/${ARTIFACT_NAME}.war"
 
+          if [ ! -s "dist/${ARTIFACT_NAME}.war" ]; then
+            echo "::error::WAR was not copied successfully to dist"
+            exit 1
+          fi
 
           cd dist
-
 
           sha256sum "${ARTIFACT_NAME}.war" \
             > "${ARTIFACT_NAME}.war.sha256"
 
+          if [ ! -s "${ARTIFACT_NAME}.war.sha256" ]; then
+            echo "::error::WAR checksum was not generated"
+            exit 1
+          fi
 
-          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
-
+          echo "artifact_name=$ARTIFACT_NAME" \
+            >> "$GITHUB_OUTPUT"
 
           echo "Artifact created:"
           echo "${ARTIFACT_NAME}.war"
 
-
+          echo ""
           echo "Checksum:"
           cat "${ARTIFACT_NAME}.war.sha256"
 
-
       # -------------------------------------------------------
-      # Publish WAR
+      # Publish WAR and checksum
       # -------------------------------------------------------
       - name: Publish IdentityIQ Artifact
         uses: actions/upload-artifact@v4
