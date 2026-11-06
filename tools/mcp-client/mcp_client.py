@@ -58,7 +58,6 @@ async def main():
     async with streamable_http_client(mcp_url) as (
         read_stream,
         write_stream,
-        _
     ):
 
         async with ClientSession(
