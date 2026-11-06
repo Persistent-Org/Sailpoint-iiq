@@ -1,47 +1,66 @@
+import asyncio
+import json
 import os
 import sys
-import asyncio
+import html
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 
+def get_text_from_tool_result(result):
+    """
+    Extract text returned by an MCP tool.
+    """
+    if not result.content:
+        return ""
+
+    for item in result.content:
+        if hasattr(item, "text"):
+            return item.text
+
+    return ""
+
+
 async def main():
+
     # ---------------------------------------------------------
-    # Read runtime values supplied by GitHub Actions
+    # Runtime values coming from GitHub Actions
     # ---------------------------------------------------------
     mcp_url = os.environ.get("MCP_SERVER_URL")
-    work_item_id = os.environ.get("WORK_ITEM_ID")
+    workitem_id = os.environ.get("WORK_ITEM_ID")
     pr_url = os.environ.get("PR_URL")
+    pr_number = os.environ.get("PR_NUMBER", "")
 
     if not mcp_url:
-        raise ValueError("MCP_SERVER_URL is not configured")
+        raise RuntimeError("MCP_SERVER_URL is missing")
 
-    if not work_item_id:
-        raise ValueError("WORK_ITEM_ID is not configured")
+    if not workitem_id:
+        raise RuntimeError("WORK_ITEM_ID is missing")
 
     if not pr_url:
-        raise ValueError("PR_URL is not configured")
+        raise RuntimeError("PR_URL is missing")
 
     try:
-        work_item_id = int(work_item_id)
+        workitem_id = int(workitem_id)
     except ValueError:
-        raise ValueError(
-            f"Invalid WORK_ITEM_ID: {work_item_id}"
+        raise RuntimeError(
+            f"Invalid WORK_ITEM_ID: {workitem_id}"
         )
 
-    print(f"Connecting to MCP server...")
-    print(f"Azure DevOps Work Item: {work_item_id}")
-    print(f"GitHub PR: {pr_url}")
+    print(f"Work Item ID : {workitem_id}")
+    print(f"PR URL       : {pr_url}")
+    print("Connecting to MCP server...")
 
     # ---------------------------------------------------------
-    # Connect to MCP deployed on Azure Web App
+    # Connect to Azure WebApp MCP server
     # ---------------------------------------------------------
     async with streamablehttp_client(mcp_url) as (
         read_stream,
         write_stream,
         _
     ):
+
         async with ClientSession(
             read_stream,
             write_stream
@@ -49,99 +68,148 @@ async def main():
 
             await session.initialize()
 
-            # -------------------------------------------------
-            # Discover tools
-            # -------------------------------------------------
-            tools_response = await session.list_tools()
+            print("Connected to MCP server")
 
-            tool_names = [tool.name for tool in tools_response.tools]
+            # =================================================
+            # TOOL 1
+            # get_work_item
+            # =================================================
 
-            print("Available MCP tools:")
-            for tool_name in tool_names:
-                print(f"  - {tool_name}")
-
-            # -------------------------------------------------
-            # IMPORTANT
-            #
-            # Replace these with the EXACT names returned
-            # by list_tools() if your server uses other names.
-            # -------------------------------------------------
-            GET_WORK_ITEM_TOOL = "get_work_item"
-            UPDATE_WORK_ITEM_TOOL = "update_work_item"
-
-            if GET_WORK_ITEM_TOOL not in tool_names:
-                raise RuntimeError(
-                    f"MCP tool not found: {GET_WORK_ITEM_TOOL}"
-                )
-
-            if UPDATE_WORK_ITEM_TOOL not in tool_names:
-                raise RuntimeError(
-                    f"MCP tool not found: {UPDATE_WORK_ITEM_TOOL}"
-                )
-
-            # -------------------------------------------------
-            # TOOL 1: Fetch the User Story
-            # -------------------------------------------------
             print(
-                f"Fetching Azure DevOps work item "
-                f"{work_item_id}..."
+                f"Fetching User Story {workitem_id}..."
             )
 
             get_result = await session.call_tool(
-                GET_WORK_ITEM_TOOL,
+                "get_work_item",
                 arguments={
-                    "id": work_item_id
+                    "workitem_id": workitem_id,
+                    "expand_relations": True
                 }
             )
 
             if get_result.isError:
                 raise RuntimeError(
-                    f"Unable to retrieve work item "
-                    f"{work_item_id}: {get_result.content}"
+                    f"get_work_item failed: "
+                    f"{get_result.content}"
                 )
 
+            response_text = get_text_from_tool_result(
+                get_result
+            )
+
             print(
-                f"Successfully found work item "
-                f"{work_item_id}"
+                f"User Story {workitem_id} found."
             )
 
             # -------------------------------------------------
-            # TOOL 2: Update User Story with PR URL
+            # Parse get_work_item response
             # -------------------------------------------------
 
+            try:
+                response_json = json.loads(response_text)
+            except json.JSONDecodeError:
+                raise RuntimeError(
+                    "get_work_item did not return valid JSON: "
+                    + response_text
+                )
+
+            # Your _success() response contains work_item.
+            work_item = response_json.get(
+                "work_item",
+                {}
+            )
+
+            fields = work_item.get(
+                "fields",
+                {}
+            )
+
+            existing_description = fields.get(
+                "System.Description",
+                ""
+            ) or ""
+
+            # -------------------------------------------------
+            # Avoid adding the same PR twice
+            # -------------------------------------------------
+
+            if pr_url in existing_description:
+                print(
+                    "PR URL already exists in User Story. "
+                    "No update required."
+                )
+                return
+
+            # -------------------------------------------------
+            # Build new description
+            # -------------------------------------------------
+
+            safe_pr_url = html.escape(
+                pr_url,
+                quote=True
+            )
+
+            if pr_number:
+                link_text = (
+                    f"GitHub Pull Request #{html.escape(pr_number)}"
+                )
+            else:
+                link_text = "GitHub Pull Request"
+
+            pr_html = (
+                "<p><strong>GitHub Pull Request:</strong> "
+                f'<a href="{safe_pr_url}">'
+                f"{link_text}</a></p>"
+            )
+
+            if existing_description.strip():
+                updated_description = (
+                    existing_description
+                    + "<br/>"
+                    + pr_html
+                )
+            else:
+                updated_description = pr_html
+
+            # =================================================
+            # TOOL 2
+            # update_work_item
+            # =================================================
+
             print(
-                f"Updating work item {work_item_id} "
-                f"with PR URL..."
+                f"Updating User Story {workitem_id}..."
             )
 
             update_result = await session.call_tool(
-                UPDATE_WORK_ITEM_TOOL,
+                "update_work_item",
                 arguments={
-                    "id": work_item_id,
-
-                    # CHANGE this field according to your
-                    # Update work item MCP tool schema.
-                    "fields": {
-                        "Custom.PullRequestUrl": pr_url
-                    }
+                    "workitem_id": workitem_id,
+                    "description_html":
+                        updated_description
                 }
             )
 
             if update_result.isError:
                 raise RuntimeError(
-                    f"Unable to update work item "
-                    f"{work_item_id}: {update_result.content}"
+                    f"update_work_item failed: "
+                    f"{update_result.content}"
                 )
 
             print(
-                f"Successfully updated work item "
-                f"{work_item_id}"
+                f"SUCCESS: User Story {workitem_id} "
+                f"updated with PR URL."
             )
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+
+        print(
+            f"ERROR: {exc}",
+            file=sys.stderr
+        )
+
         sys.exit(1)
