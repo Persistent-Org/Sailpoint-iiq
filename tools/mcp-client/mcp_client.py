@@ -5,7 +5,7 @@ import sys
 import html
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 
 def get_text_from_tool_result(result):
@@ -55,7 +55,7 @@ async def main():
     # ---------------------------------------------------------
     # Connect to Azure WebApp MCP server
     # ---------------------------------------------------------
-    async with streamablehttp_client(mcp_url) as (
+    async with streamable_http_client(mcp_url) as (
         read_stream,
         write_stream,
         _
