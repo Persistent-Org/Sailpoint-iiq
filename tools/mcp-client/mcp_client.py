@@ -5,7 +5,7 @@ import sys
 import html
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 
 def get_text_from_tool_result(result):
