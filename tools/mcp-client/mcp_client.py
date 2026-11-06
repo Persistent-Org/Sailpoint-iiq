@@ -205,10 +205,23 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
 
-    except Exception as exc:
+    except BaseException as exc:
+        import traceback
 
         print(
-            f"ERROR: {exc}",
+            "\n========== COMPLETE MCP ERROR ==========",
+            file=sys.stderr
+        )
+
+        traceback.print_exception(
+            type(exc),
+            exc,
+            exc.__traceback__,
+            file=sys.stderr
+        )
+
+        print(
+            "========================================",
             file=sys.stderr
         )
 
